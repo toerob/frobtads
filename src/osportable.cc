@@ -541,72 +541,101 @@ int
 os_file_stat( const char *fname, int follow_links, os_file_stat_t *s )
 {
     struct stat buf;
+
+    /* Call stat to fetch metadata. If it fails return false. */
     if ((follow_links ? stat(fname, &buf) : lstat(fname, &buf)) != 0)
         return false;
 
+    /* Split file byte size from stat buffer into high+low 32-bit portions. */
     s->sizelo = (uint32_t)(buf.st_size & 0xFFFFFFFF);
     s->sizehi = sizeof(buf.st_size) > 4
                 ? (uint32_t)((buf.st_size >> 32) & 0xFFFFFFFF)
                 : 0;
+
+    /* Copy size and time fields */
     s->cre_time = buf.st_ctime;
     s->mod_time = buf.st_mtime;
     s->acc_time = buf.st_atime;
+
+    /* Store the file mode bit */
     s->mode = buf.st_mode;
+    
+
+    /* Clear attributes to prepare it */
     s->attrs = 0;
 
+    /* Add a mark for hidden in the attributes if filename starts with a dot */
     if (os_get_root_name(fname)[0] == '.') {
         s->attrs |= OSFATTR_HIDDEN;
     }
 
-    // If we're the owner, check if we have read/write access.
+    /* If we're the owner, check if we have read/write access.  */
     if (geteuid() == buf.st_uid) {
         if (buf.st_mode & S_IRUSR)
             s->attrs |= OSFATTR_READ;
         if (buf.st_mode & S_IWUSR)
             s->attrs |= OSFATTR_WRITE;
-        return true;
+        return true; // We're the owner, so we're done
     }
 
-    // Check if one of our groups matches the file's group and if so, check
-    // for read/write access.
+    /*
+     * We are not the owner of the file, but we might still have read/write
+     * access because of group permissions.
+     *
+     * Check whether the file’s group matches any of our groups; if so,
+     * use group read/write bits to set the attributes.
+     *
+     * Group resolution is best-effort. We already have valid stat()
+     * data, and the only reason to consult groups is to refine the
+     * read/write attribute bits. If getgroups() fails or returns an
+     * unexpected size (which can happen under some macOS setups), we
+     * must not treat that as a fatal error; otherwise os_file_stat()
+     * would report failure and build tools would treat the file as
+     * missing, causing unnecessary rebuilds. In that case, skip
+     * group-based permissions and fall back to the world bits.
+     */
 
-    // Also reserve a spot for the effective group ID, which might
-    // not be included in the list in our next call.
+    /* Reserve slot 0 for the effective GID of the process, which getgroups()
+     * might omit.
+     */
+    int grpSize =
+        getgroups(0, NULL) + 1; // reserve index 0 by adding 1 to the count
 
-    // Group resolution is best-effort. We already have valid stat()
-    // data, and the only reason to consult groups is to refine the
-    // read/write attribute bits. If getgroups() fails or returns an
-    // unexpected size (which can happen under some macOS setups), we
-    // must not treat that as a fatal error; otherwise callers interpret
-    // the file as missing and trigger spurious rebuilds. In that case,
-    // skip group-based permissions and fall back to the world bits.
-    int grpSize = getgroups(0, NULL) + 1;
-    if (grpSize > 0 && grpSize <= NGROUPS_MAX)
-    {
-        const auto groups = std::make_unique<gid_t[]>(grpSize);
-        if (getgroups(grpSize - 1, groups.get() + 1) >= 0)
-        {
-            groups[0] = getegid();
-            int i;
-            for (i = 0; i < grpSize and buf.st_gid != groups[i]; ++i)
-                ;
-            if (i < grpSize)
-            {
-                if (buf.st_mode & S_IRGRP)
-                    s->attrs |= OSFATTR_READ;
-                if (buf.st_mode & S_IWGRP)
-                    s->attrs |= OSFATTR_WRITE;
-                return true;
-            }
+    /* Only proceed when the group count is sane and within our buffer size. */
+    if (grpSize > 0 && grpSize <= NGROUPS_MAX) {
+      const auto groups = std::make_unique<gid_t[]>(grpSize);
+      if (getgroups(grpSize - 1, groups.get() + 1) >= 0) {
+        groups[0] = getegid(); // Now, ensure the effective GID is included at
+                               // the reserved slot 0
+
+        // Scan to see if the file's owning group matches one of our groups.
+        bool in_group = false;
+        for (int i = 0; i < grpSize; ++i) {
+          if (groups[i] == buf.st_gid) {
+            in_group = true;
+            break;
+          }
         }
+
+        /* Check whether we found a matching group, set the privileges
+         * accordingly and return successfully.
+         */
+        if (in_group) {
+          if (buf.st_mode & S_IRGRP)
+            s->attrs |= OSFATTR_READ;
+          if (buf.st_mode & S_IWGRP)
+            s->attrs |= OSFATTR_WRITE;
+          return true;
+        }
+      }
     }
 
     // We're neither the owner of the file nor do we belong to its
     // group.  Check whether the file is world readable/writable.
     if (buf.st_mode & S_IROTH)
-        s->attrs |= OSFATTR_READ;
+      s->attrs |= OSFATTR_READ;
     if (buf.st_mode & S_IWOTH)
-        s->attrs |= OSFATTR_WRITE;
+      s->attrs |= OSFATTR_WRITE;
     return true;
 }
 

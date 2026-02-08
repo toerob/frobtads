@@ -2007,6 +2007,10 @@ int CTcMake::compare_build_config_from_sym_file(
             file_cmp = file_abs;
         }
 
+        /**
+         * Ensure current include path from what t3make has right now (for this
+         * run) is an absolute path format, in order to have stable comparisons
+         */
         cur_cmp = path->get_path();
         if (!os_is_file_absolute(cur_cmp))
         {
@@ -2014,9 +2018,9 @@ int CTcMake::compare_build_config_from_sym_file(
             cur_cmp = cur_abs;
         }
 
-        /* compare this entry */
+        /* compare the raw current string against the raw stored string  */
         if (strcmp(cur_cmp, file_cmp) != 0)
-            return FALSE;
+          return FALSE;
     }
 
     /* 
