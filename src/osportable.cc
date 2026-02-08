@@ -572,25 +572,33 @@ os_file_stat( const char *fname, int follow_links, os_file_stat_t *s )
 
     // Also reserve a spot for the effective group ID, which might
     // not be included in the list in our next call.
-    int grpSize = getgroups(0, NULL) + 1;
-    // Paranoia.
-    if (grpSize > NGROUPS_MAX or grpSize < 0)
-        return false;
 
-    const auto groups = std::make_unique<gid_t[]>(grpSize);
-    if (getgroups(grpSize - 1, groups.get() + 1) < 0) {
-        return false;
-    }
-    groups[0] = getegid();
-    int i;
-    for (i = 0; i < grpSize and buf.st_gid != groups[i]; ++i)
-        ;
-    if (i < grpSize) {
-        if (buf.st_mode & S_IRGRP)
-            s->attrs |= OSFATTR_READ;
-        if (buf.st_mode & S_IWGRP)
-            s->attrs |= OSFATTR_WRITE;
-        return true;
+    // Group resolution is best-effort. We already have valid stat()
+    // data, and the only reason to consult groups is to refine the
+    // read/write attribute bits. If getgroups() fails or returns an
+    // unexpected size (which can happen under some macOS setups), we
+    // must not treat that as a fatal error; otherwise callers interpret
+    // the file as missing and trigger spurious rebuilds. In that case,
+    // skip group-based permissions and fall back to the world bits.
+    int grpSize = getgroups(0, NULL) + 1;
+    if (grpSize > 0 && grpSize <= NGROUPS_MAX)
+    {
+        const auto groups = std::make_unique<gid_t[]>(grpSize);
+        if (getgroups(grpSize - 1, groups.get() + 1) >= 0)
+        {
+            groups[0] = getegid();
+            int i;
+            for (i = 0; i < grpSize and buf.st_gid != groups[i]; ++i)
+                ;
+            if (i < grpSize)
+            {
+                if (buf.st_mode & S_IRGRP)
+                    s->attrs |= OSFATTR_READ;
+                if (buf.st_mode & S_IWGRP)
+                    s->attrs |= OSFATTR_WRITE;
+                return true;
+            }
+        }
     }
 
     // We're neither the owner of the file nor do we belong to its

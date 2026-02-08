@@ -65,6 +65,17 @@ Modified
 #include "vmcrc.h"
 #include "rcmain.h"
 
+static int t3make_trace_enabled()
+{
+    static int cached = -1;
+    if (cached != -1)
+        return cached;
+
+    const char *env = getenv("T3MAKE_TRACE");
+    cached = (env != 0 && *env != '\0' && strcmp(env, "0") != 0) ? 1 : 0;
+    return cached;
+}
+
 
 /* ------------------------------------------------------------------------ */
 /*
@@ -851,13 +862,23 @@ void CTcMake::build(CTcHostIfc *hostifc, int *errcnt, int *warncnt,
              *   is later than the symbol file's modification time, then
              *   we'll need to build the symbol file.  
              */
-            if (force_build
-                || !os_file_stat(srcfile, TRUE, &srcstat)
-                || !os_file_stat(symfile, TRUE, &symstat)
-                || srcstat.mod_time > symstat.mod_time)
+            int src_ok = os_file_stat(srcfile, TRUE, &srcstat);
+            int sym_ok = os_file_stat(symfile, TRUE, &symstat);
+            int src_newer = (src_ok && sym_ok
+                             && srcstat.mod_time > symstat.mod_time);
+
+            if (force_build || !src_ok || !sym_ok || src_newer)
             {
                 /* this symbol file requires recompilation */
                 sym_recomp = TRUE;
+
+                if (t3make_trace_enabled())
+                {
+                    printf("t3make trace: sym %s force=%d src_ok=%d sym_ok=%d src_newer=%d src=%lld sym=%lld\n",
+                           srcfile, force_build, src_ok, sym_ok, src_newer,
+                           (long long)(src_ok ? srcstat.mod_time : 0),
+                           (long long)(sym_ok ? symstat.mod_time : 0));
+                }
             }
             else
             {
@@ -959,16 +980,35 @@ void CTcMake::build(CTcHostIfc *hostifc, int *errcnt, int *warncnt,
              *   file before encountering an error, in which case the object
              *   file could appear up-to-date.  
              */
+            int obj_src_ok = os_file_stat(srcfile, TRUE, &srcstat);
+            int obj_ok = os_file_stat(objfile, TRUE, &objstat);
+            int obj_sym_ok = os_file_stat(symfile, TRUE, &symstat);
+            int obj_src_newer = (obj_src_ok && obj_ok
+                                 && srcstat.mod_time > objstat.mod_time);
+            int obj_sym_newer = (obj_sym_ok && obj_ok
+                                 && symstat.mod_time > objstat.mod_time);
+
             if (force_build
                 || sym_recomp
-                || !os_file_stat(srcfile, TRUE, &srcstat)
-                || !os_file_stat(objfile, TRUE, &objstat)
-                || !os_file_stat(symfile, TRUE, &symstat)
-                || srcstat.mod_time > objstat.mod_time
-                || symstat.mod_time > objstat.mod_time)
+                || !obj_src_ok
+                || !obj_ok
+                || !obj_sym_ok
+                || obj_src_newer
+                || obj_sym_newer)
             {
                 /* we do have to rebuild the object file */
                 obj_recomp = TRUE;
+
+                if (t3make_trace_enabled())
+                {
+                    printf("t3make trace: obj %s force=%d sym_recomp=%d src_ok=%d obj_ok=%d sym_ok=%d src_newer=%d sym_newer=%d src=%lld obj=%lld sym=%lld\n",
+                           srcfile, force_build, sym_recomp,
+                           obj_src_ok, obj_ok, obj_sym_ok,
+                           obj_src_newer, obj_sym_newer,
+                           (long long)(obj_src_ok ? srcstat.mod_time : 0),
+                           (long long)(obj_ok ? objstat.mod_time : 0),
+                           (long long)(obj_sym_ok ? symstat.mod_time : 0));
+                }
             }
 
             /* note whether or not we have to build the object file */
@@ -1924,6 +1964,11 @@ int CTcMake::compare_build_config_from_sym_file(
         || buf[3] != TC_VSN_PATCH
         || buf[4] != TC_VSN_DEVBUILD)
     {
+        if (t3make_trace_enabled())
+        {
+            printf("t3make trace: symcfg %s reason=compiler_version\n",
+                   sym_fname);
+        }
         /* 
          *   the compiler has been updated since this file was compiled;
          *   force a recompilation in case anything has changed in the
@@ -1938,7 +1983,14 @@ int CTcMake::compare_build_config_from_sym_file(
      */
     fp->read_bytes(buf, 1);
     if ((buf[0] != 0) != (debug_ != 0))
+    {
+        if (t3make_trace_enabled())
+        {
+            printf("t3make trace: symcfg %s reason=debug_mode\n",
+                   sym_fname);
+        }
         return FALSE;
+    }
 
     /* read the -U/-D options */
     for (def = def_head_, cnt = fp->read_int2() ; cnt != 0 ;
@@ -1949,15 +2001,36 @@ int CTcMake::compare_build_config_from_sym_file(
          *   some symbols this time, so the configuration has changed 
          */
         if (def == 0)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=def_list_short\n",
+                       sym_fname);
+            }
             return FALSE;
+        }
 
         /* read and compare the symbol */
         if (!read_and_compare_config_str(fp, def->get_sym()))
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=def_symbol\n",
+                       sym_fname);
+            }
             return FALSE;
+        }
 
         /* read and compare the expansion */
         if (!read_and_compare_config_str(fp, def->get_expan()))
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=def_expan\n",
+                       sym_fname);
+            }
             return FALSE;
+        }
 
         /* read and compare the define/undefine flag */
         fp->read_bytes(buf, 1);
@@ -1969,13 +2042,64 @@ int CTcMake::compare_build_config_from_sym_file(
     for (path = inc_head_, cnt = fp->read_int2() ; cnt != 0 ;
          --cnt, path = path->get_next())
     {
+        size_t len;
+        char file_path[OSFNMAX + 1];
+        char file_abs[OSFNMAX + 1];
+        char cur_abs[OSFNMAX + 1];
+        const char *file_cmp;
+        const char *cur_cmp;
+
         /* if we're out of items in our list, the config has changed */
         if (path == 0)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_path_short\n",
+                       sym_fname);
+            }
             return FALSE;
+        }
+
+        /* read the stored include path string */
+        len = fp->read_int2();
+        if (len > sizeof(file_path) - 1)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_path_len\n",
+                       sym_fname);
+            }
+            return FALSE;
+        }
+
+        fp->read_bytes(file_path, len);
+        file_path[len] = '\0';
+
+        /* normalize relative paths to absolute for stable comparisons */
+        file_cmp = file_path;
+        if (!os_is_file_absolute(file_cmp))
+        {
+            os_get_abs_filename(file_abs, sizeof(file_abs), file_cmp);
+            file_cmp = file_abs;
+        }
+
+        cur_cmp = path->get_path();
+        if (!os_is_file_absolute(cur_cmp))
+        {
+            os_get_abs_filename(cur_abs, sizeof(cur_abs), cur_cmp);
+            cur_cmp = cur_abs;
+        }
 
         /* compare this entry */
-        if (!read_and_compare_config_str(fp, path->get_path()))
+        if (strcmp(cur_cmp, file_cmp) != 0)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_path file=%s cur=%s\n",
+                       sym_fname, file_cmp, cur_cmp);
+            }
             return FALSE;
+        }
     }
 
     /* 
@@ -1984,7 +2108,14 @@ int CTcMake::compare_build_config_from_sym_file(
      *   timestamps to the symbol file timestamp 
      */
     if (!os_file_stat(sym_fname, TRUE, &sym_stat))
+    {
+        if (t3make_trace_enabled())
+        {
+            printf("t3make trace: symcfg %s reason=sym_stat\n",
+                   sym_fname);
+        }
         return FALSE;
+    }
 
     /* read the #include file list */
     for (cnt = fp->read_int2() ; cnt != 0 ; --cnt)
@@ -1998,7 +2129,14 @@ int CTcMake::compare_build_config_from_sym_file(
          */
         len = fp->read_int2();
         if (len > sizeof(buf) - 1)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_name_len\n",
+                       sym_fname);
+            }
             return FALSE;
+        }
 
         /* read the name */
         fp->read_bytes(buf, len);
@@ -2010,14 +2148,30 @@ int CTcMake::compare_build_config_from_sym_file(
          *   more, so we have to try a recompile 
          */
         if (!os_file_stat(buf, TRUE, &inc_stat))
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_stat file=%s\n",
+                       sym_fname, buf);
+            }
             return FALSE;
+        }
 
         /* 
          *   if the include file has been modified more recently than the
          *   symbol file, we must recompile the source 
          */
         if (inc_stat.mod_time > sym_stat.mod_time)
+        {
+            if (t3make_trace_enabled())
+            {
+                printf("t3make trace: symcfg %s reason=inc_newer file=%s inc=%lld sym=%lld\n",
+                       sym_fname, buf,
+                       (long long)inc_stat.mod_time,
+                       (long long)sym_stat.mod_time);
+            }
             return FALSE;
+        }
     }
 
     /* 
