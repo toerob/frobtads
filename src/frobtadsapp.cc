@@ -24,7 +24,6 @@ extern "C"
 #include "frobtadsapp.h"
 #include "frobappctx.h"
 
-
 FrobTadsApplication* globalApp;
 
 
@@ -127,6 +126,10 @@ FrobTadsApplication::fRunTads3( char* filename, int argc, const char* const* arg
     params.saved_state = savedState;
     params.netconfig = netconfig;
     params.cmd_log_file = this->options.cmdLogFile.c_str();
+
+    // Create and install the debugger UI via the CVmDebugUI static dispatch mechanism.
+    // Returns nullptr if not compiled with VM_DEBUGGER.
+    installDebuggerUI(createDebuggerUI(this->options));
 
     // Invoke the VM to run the program.
     int vmRet = vm_run_image(&params);

@@ -121,6 +121,7 @@ add_executable (
     ${TADS2_HEADERS}
     ${TADS3_HEADERS}
     src/osportable.cc
+    src/debuguifactory_nodebug.cc
     tads3/vmrun.cpp
     $<TARGET_OBJECTS:FROB_OBJECTS>
     $<TARGET_OBJECTS:COMMON_OBJECTS>
@@ -154,6 +155,12 @@ if (ENABLE_FROBD)
         ${TADS3_HEADERS}
         src/osportable.cc
         src/debugui.cc
+        src/dap/dapdebugui.cc
+        src/dap/dap_framing.cc
+        src/dap/dapdebugui_io.cc
+        src/textutils.cc
+        src/frobdebughelper.cc
+        src/debuguifactory.cc
         tads3/vmdbg.cpp
         tads3/vmrun.cpp
         tads3/vmbt3_d.cpp

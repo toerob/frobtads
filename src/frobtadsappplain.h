@@ -9,12 +9,25 @@
 
 
 class FrobTadsApplicationPlain: public FrobTadsApplication {
+  private:
+    bool fUseColors;
+    
+    // ANSI color codes
+    const char* COLOR_RESET = "\033[0m";
+    const char* COLOR_STACK = "\033[0;36m";         // Cyan
+    
   public:
     FrobTadsApplicationPlain( const FrobOptions& opts )
-    : FrobTadsApplication(opts)
+        : FrobTadsApplication(opts), fUseColors(true)
     {
         // Just tell the osgen layer to use plain mode.
         os_plain();
+        
+        // Check if colors are supported (simple check for terminal)
+        const char* term = getenv("TERM");
+        if (!term || strstr(term, "dumb")) {
+            fUseColors = false;
+        }
     }
 
 
@@ -74,6 +87,21 @@ class FrobTadsApplicationPlain: public FrobTadsApplication {
     virtual int
     width() const
     { return 80; }
+    
+    // Debug support methods
+    virtual void
+    debugPrint(const char* str)
+    {
+        if (str) {
+            // Use cyan color for debug text to distinguish from game output
+            if (fUseColors) {
+                printf("%s%s%s", COLOR_STACK, str, COLOR_RESET);
+            } else {
+                printf("%s", str);
+            }
+            fflush(stdout);
+        }
+    }
 };
 
 #endif // FROBTADSAPPPLAIN_H

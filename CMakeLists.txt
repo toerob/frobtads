@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.10)
 project(FrobTADS)
 
 option (
@@ -46,7 +46,7 @@ option (
 option (
     ENABLE_FROBD
     "Build frobd, a version of frob usable by debuggers."
-    OFF
+    ON
 )
 
 if (CMAKE_VERSION VERSION_GREATER_EQUAL "3.13")
@@ -221,3 +221,15 @@ configure_file (
     ${PROJECT_SOURCE_DIR}/frob_config.h.in
     ${PROJECT_BINARY_DIR}/frob_config.h
 )
+
+option (
+    ENABLE_TESTS
+    "Build the unit tests."
+    ON
+)
+
+if (ENABLE_TESTS)
+    include(CTest)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

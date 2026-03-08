@@ -19,6 +19,9 @@ extern "C" {
 
 #include <string>
 
+// Forward declarations
+class DebuggerUI;
+
 
 /* Global application pointer.
  */
@@ -29,6 +32,13 @@ class FrobTadsApplication {
     // Signal handlers are such a pain in the ass...  Has to be
     // friend.
     friend void winResizeHandler(int);
+
+    // Debugger protocol selection
+    enum class DebugProtocol {
+        None,      // (Default)
+        Terminal,  // Terminal-based debugger
+      DAP        // Debug Adapter Protocol (IDE integration)
+    };
 
     // Instead of using a gazillion of constructor-arguments, we
     // group them inside this structure.
@@ -54,6 +64,9 @@ class FrobTadsApplication {
         std::string replayFile;                        // Replay file.
         std::string cmdLogFile;                        // Command input file.
         int seedRand = true; // Enable automatic initial seeding of RNG in interpreter?
+        DebugProtocol debugProtocol = DebugProtocol::None; // Debugger protocol to use.
+        std::string dapSocket;                         // Path to Unix domain socket for DAP communication
+        int dapPort = 0;                               // TCP port for DAP communication (0 = disabled)
     };
 
     // Our options.  Once set, they remain constant during run-time
@@ -197,6 +210,54 @@ class FrobTadsApplication {
      */
     virtual int
     width() const = 0;
+
+    /* Debug window methods for split-screen debugger.
+     * These are typically implemented only in FrobTadsApplicationCurses.
+     * Default implementations (in plain mode) do nothing.
+     */
+    virtual void
+    debugPrint( const char* str ) {}
+
+    virtual void
+    debugPrintChar( int c ) {}
+
+    virtual int
+    getDebugChar() { return -1; }
+
+    virtual void
+    debugFlush() {}
+
+    virtual void
+    debugClear() {}
+
+    virtual void
+    getDebugWindowSize( int& lines, int& cols ) const 
+    { lines = 0; cols = 0; }
+
+    /* Toggle debug fullscreen (curses only) */
+    virtual void
+    debugSetFullscreen(bool on) {}
+
+    virtual bool
+    debugIsFullscreen() { return false; }
+
+    /* Stack window control */
+    virtual void
+    debugSetStackVisible(bool on) {}
+
+    virtual void
+    debugShowStack(const char *text) {}
+
+    virtual bool
+    debugIsStackVisible() { return false; }
 };
+
+/* Factory function to create the appropriate debugger UI based on options */
+/* Returns nullptr if not compiled with debugger support (VM_DEBUGGER not defined) */
+DebuggerUI* createDebuggerUI(const FrobTadsApplication::FrobOptions& opts);
+
+/* Install the debugger UI to be used by the CVmDebugUI static methods.
+ * Call this before vm_run_image() to register the active debugger UI. */
+void installDebuggerUI(DebuggerUI *ui);
 
 #endif // FROBTADSAPP

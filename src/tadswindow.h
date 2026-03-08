@@ -8,7 +8,6 @@
 #define TADSWINDOW_H
 
 #include "common.h"
-
 #include <memory>
 #include "frobcurses.h"
 

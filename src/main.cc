@@ -91,6 +91,12 @@ const char helpOutput[] =
 "                       is curses. (Advanced features like statusline, banners\n"
 "                       and colors are not available when using the plain\n"
 "                       interface.)\n"
+"  -D, --debug-protocol Use given debug protocol (terminal or dap). Default\n"
+"                       is none. DAP enables Debug Adapter Protocol for IDE\n"
+"                       integration.\n"
+"  -P, --dap-port       TCP port for DAP communication (for IDE integration)\n"
+"  -Q, --dap-socket     Unix domain socket path for DAP communication\n"
+"                       (for IDE integration, default: /tmp/tads-dap.sock)\n"
 "Color codes:\n"
 "   0:black 1:red 2:green 3:yellow 4:blue 5:magenta 6:cyan 7:white\n"
 "(Note that yellow is actually brown on some hardware, mostly PCs.)\n"
@@ -154,6 +160,7 @@ int main( int argc, char** argv )
         "b:bcolor <0..7>",
         "c|no-scrolling",
         "d|no-chdir",
+        "D:debug-protocol <terminal|dap>",
         "e:scroll-buffer <8..8192>",
         "f|force-colors",
         "g:stat-bcolor <0..7>",
@@ -171,6 +178,8 @@ int main( int argc, char** argv )
 #endif
         "o|no-defcolors",
         "p|no-pause",
+        "P:dap-port <port>",
+        "Q:dap-socket <path>",
         "R:replay <filename>",
         "r:restore <filename>",
         "s:safety-level <00..44>",
@@ -292,6 +301,59 @@ int main( int argc, char** argv )
       case 'd':
         frobOpts.changeDir = false;
         break;
+
+      // --debug-protocol
+      case 'D': {
+        if (optionError) break;
+        if (optArg == 0) {
+            // Argument is missing.
+            optionError = true;
+            break;
+        }
+        if (strcmp(optArg, "terminal") == 0) {
+            frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::Terminal;
+        } else if (strcmp(optArg, "dap") == 0) {
+          frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::DAP;
+        } else if (strcmp(optArg, "lsp") == 0) {
+          // Backward-compatibility alias (older docs/scripts used "lsp" for DAP mode)
+          frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::DAP;
+        } else {
+          cerr << opts.name() << ": debug protocol must be 'terminal' or 'dap'.\n";
+            optionError = true;
+            break;
+        }
+        break;
+      }
+
+      // --dap-port
+      case 'P': {
+        if (optionError) break;
+        if (optArg == 0) {
+            // Argument is missing.
+            optionError = true;
+            break;
+        }
+        int port;
+        if (sscanf(optArg, "%d", &port) == 0 || port < 1 || port > 65535) {
+            cerr << opts.name() << ": port must be a number between 1-65535.\n";
+            optionError = true;
+            break;
+        }
+        frobOpts.dapPort = port;
+        break;
+      }
+
+      // --dap-socket
+      case 'Q': {
+        if (optionError) break;
+        if (optArg == 0) {
+            // Argument is missing.
+            optionError = true;
+            break;
+        }
+        frobOpts.dapSocket = optArg;
+        break;
+      }
 
       case 't': // --tcolor
       case 'b': // --bcolor
@@ -636,8 +698,16 @@ int main( int argc, char** argv )
         int t3vmRet;
         char **progArgv = argv + iter.index();
         int progArgc = argc - iter.index();
+
         switch (interface) {
           case cursesInterface:
+
+            if(frobOpts.debugProtocol != FrobTadsApplication::DebugProtocol::None) {
+              cerr << opts.name() << ": Debug protocol only available in plain mode (-i plain).\n";
+              optionError = true;
+              return 1;
+            }
+
             t3vmRet = FrobTadsApplicationCurses(frobOpts)
                       .runTads(actualFilename, 1, progArgc, progArgv, savedPosFilename, netconfig);
             break;
