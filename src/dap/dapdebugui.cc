@@ -1,7 +1,7 @@
 /*
  * dapdebugui.cc - Debug Adapter Protocol debugger
  */
-
+#include "common.h"
 #include "dap/dapdebugui.h"
 #include "dap/dap_framing.h"
 #include "vmdbg.h"
@@ -27,6 +27,10 @@
 /* Signal flag for interrupt handling */
 volatile sig_atomic_t g_dap_interrupted = 0;
 
+/* Set to 1 while blocked in a DAP message-reading loop (init or cmd_loop).
+ * When 0 the VM is running game code and signals should terminate normally. */
+volatile sig_atomic_t g_dap_in_message_loop = 0;
+
 /* Global pointer to current DAP debug instance for signal handler */
 CDapDebugUI *g_dap_instance = nullptr;
 
@@ -35,17 +39,20 @@ void dap_signal_handler(int signum);
 
 /* Signal handler for SIGINT and SIGTERM */
 void dap_signal_handler(int signum) {
-  /* Only intercept if we're actively debugging, otherwise let default behavior
-   * happen */
-  if (g_dap_instance && g_dap_instance->ctx_ &&
-      g_dap_instance->ctx_->in_debugger) {
-    g_dap_interrupted = 1;
-    std::cerr << "\n[DAP Debug] Interrupted by signal " << signum << std::endl;
-  } else {
-    /* Not in debugger - restore default handler and re-raise signal */
-    std::signal(signum, SIG_DFL);
-    raise(signum);
+  /* Always set the flag so any DAP loop can observe it. */
+  g_dap_interrupted = 1;
+
+  if (g_dap_in_message_loop) {
+    /* We're blocked in poll()/read() inside a DAP message loop.
+     * The flag is enough — the interrupted syscall (EINTR) plus the flag
+     * check will break the loop cleanly. */
+    return;
   }
+
+  /* Not in a message loop (VM is running, or no DAP instance).
+   * Restore the default handler and re-raise so the process terminates. */
+  std::signal(signum, SIG_DFL);
+  raise(signum);
 }
 
 /*
@@ -115,6 +122,7 @@ void CDapDebugUI::init(VMG_ const char *image_filename) {
   // breakpoints before execution starts The client will have to save up
   // breakpoints in a queue and send them after the launch request, so we just
   // need to wait for that initial launch request before we start executing
+  g_dap_in_message_loop = 1;
   while (!state_.launched && !state_.should_exit && !g_dap_interrupted) {
     std::cerr << "[DAP Debug] Loop iteration - trying to read message..."
               << std::endl;
@@ -124,14 +132,18 @@ void CDapDebugUI::init(VMG_ const char *image_filename) {
       process_request(request);
     } else {
       std::cerr << "[DAP Debug] read_message() returned false" << std::endl;
-      // Failed to read message - check if we should abort
-      if (g_dap_interrupted) {
-        std::cerr << "[DAP Debug] Startup aborted by user" << std::endl;
+      // Connection lost or interrupted - stop waiting.
+      // read_message() already sets should_exit on EOF/disconnect;
+      // also break on interrupt to avoid a tight retry loop.
+      if (g_dap_interrupted || state_.should_exit) {
+        std::cerr << "[DAP Debug] Startup aborted" << std::endl;
         state_.should_exit = true;
         break;
       }
     }
   }
+
+  g_dap_in_message_loop = 0;
 
   std::cerr << "[DAP Debug] Exited while loop - state_.launched="
             << state_.launched << std::endl;
@@ -216,6 +228,7 @@ void CDapDebugUI::cmd_loop(VMG_ int bp_number, int error_code,
   }
 
   // Process messages until execution should resume
+  g_dap_in_message_loop = 1;
   while (ctx_->in_debugger && !state_.should_exit && !g_dap_interrupted) {
     json request;
     if (read_message(request)) {
@@ -225,6 +238,7 @@ void CDapDebugUI::cmd_loop(VMG_ int bp_number, int error_code,
       break;
     }
   }
+  g_dap_in_message_loop = 0;
 
   // If interrupted, mark for exit
   if (g_dap_interrupted) {
@@ -289,8 +303,8 @@ bool CDapDebugUI::read_message(json &msg) {
   std::cerr << "[DAP Debug] read_message() called" << std::endl;
 
   // Check for interrupt signal
-  if (g_dap_interrupted) {
-    std::cerr << "[DAP Debug] Aborting due to interrupt" << std::endl;
+  if (g_dap_interrupted || state_.should_exit) {
+    std::cerr << "[DAP Debug] Aborting due to interrupt/exit" << std::endl;
     return false;
   }
 
@@ -300,16 +314,46 @@ bool CDapDebugUI::read_message(json &msg) {
 
   std::cerr << "[DAP Debug] Starting header read loop..." << std::endl;
 
-  // First, wait for data to arrive with poll
+  // Wait for data with periodic timeout so we can check for interrupts
+  // and detect dead connections.
   struct pollfd pfd;
   pfd.fd = io_fd_;
   pfd.events = POLLIN;
 
   std::cerr << "[DAP Debug] Waiting for data with poll()..." << std::endl;
-  int poll_result = poll(&pfd, 1, -1); // Wait indefinitely for first data
-  if (poll_result < 0) {
-    std::cerr << "[DAP Debug] Poll error: " << strerror(errno) << std::endl;
-    return false;
+  while (true) {
+    if (g_dap_interrupted || state_.should_exit) {
+      std::cerr << "[DAP Debug] Aborting poll loop (interrupt/exit)" << std::endl;
+      return false;
+    }
+
+    int poll_result = poll(&pfd, 1, 5000); // 5-second timeout
+    if (poll_result < 0) {
+      if (errno == EINTR) {
+        // Interrupted by signal - recheck flags and retry
+        continue;
+      }
+      std::cerr << "[DAP Debug] Poll error: " << strerror(errno) << std::endl;
+      state_.should_exit = true;
+      return false;
+    }
+
+    if (poll_result == 0) {
+      // Timeout - loop back and recheck interrupt/exit flags
+      continue;
+    }
+
+    // Check for hangup or error (client disconnected)
+    if (pfd.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+      std::cerr << "[DAP Debug] Client disconnected (poll revents=0x"
+                << std::hex << pfd.revents << std::dec << ")" << std::endl;
+      state_.should_exit = true;
+      return false;
+    }
+
+    if (pfd.revents & POLLIN) {
+      break; // Data available
+    }
   }
 
   std::cerr << "[DAP Debug] Data available, reading headers..." << std::endl;
@@ -332,19 +376,33 @@ bool CDapDebugUI::read_message(json &msg) {
 
   // Read lines byte by byte until we get all headers
   while (true) {
-    // Check for interrupt
-    if (g_dap_interrupted) {
-      std::cerr << "[DAP Debug] Aborting due to interrupt" << std::endl;
+    // Check for interrupt or exit
+    if (g_dap_interrupted || state_.should_exit) {
+      std::cerr << "[DAP Debug] Aborting due to interrupt/exit" << std::endl;
       return false;
     }
 
     // Read rest of current line
     char c;
-    while (read_bytes(&c, 1) == 1) {
-      if (c == '\n') {
-        break; // End of line
+    while (true) {
+      ssize_t n = read_bytes(&c, 1);
+      if (n == 1) {
+        if (c == '\n') {
+          break; // End of line
+        }
+        line += c;
+      } else if (n == 0) {
+        // EOF - client disconnected
+        std::cerr << "[DAP Debug] EOF while reading header" << std::endl;
+        state_.should_exit = true;
+        return false;
+      } else {
+        // Error (read_bytes handles EINTR internally)
+        std::cerr << "[DAP Debug] Read error in header: " << strerror(errno)
+                  << std::endl;
+        state_.should_exit = true;
+        return false;
       }
-      line += c;
     }
 
     std::cerr << "[DAP Debug] Read header line (length=" << line.length()
@@ -392,10 +450,22 @@ bool CDapDebugUI::read_message(json &msg) {
   content.resize(content_length);
   size_t total_read = 0;
   while (total_read < content_length) {
+    if (g_dap_interrupted || state_.should_exit) {
+      std::cerr << "[DAP Debug] Aborting content read (interrupt/exit)"
+                << std::endl;
+      return false;
+    }
     ssize_t n = read_bytes(&content[total_read], content_length - total_read);
-    if (n <= 0) {
-      std::cerr << "[DAP Debug] Failed to read content: got " << total_read
+    if (n == 0) {
+      std::cerr << "[DAP Debug] EOF reading content: got " << total_read
                 << " of " << content_length << " bytes" << std::endl;
+      state_.should_exit = true;
+      return false;
+    }
+    if (n < 0) {
+      std::cerr << "[DAP Debug] Read error in content: " << strerror(errno)
+                << std::endl;
+      state_.should_exit = true;
       return false;
     }
     total_read += n;

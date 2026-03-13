@@ -91,7 +91,7 @@ const char helpOutput[] =
 "                       is curses. (Advanced features like statusline, banners\n"
 "                       and colors are not available when using the plain\n"
 "                       interface.)\n"
-"  -D, --debug-protocol Use given debug protocol (terminal or dap). Default\n"
+"  -D, --debug-protocol Use given debug protocol (dap). Default\n"
 "                       is none. DAP enables Debug Adapter Protocol for IDE\n"
 "                       integration.\n"
 "  -P, --dap-port       TCP port for DAP communication (for IDE integration)\n"
@@ -160,7 +160,7 @@ int main( int argc, char** argv )
         "b:bcolor <0..7>",
         "c|no-scrolling",
         "d|no-chdir",
-        "D:debug-protocol <terminal|dap>",
+        "D:debug-protocol <dap>",
         "e:scroll-buffer <8..8192>",
         "f|force-colors",
         "g:stat-bcolor <0..7>",
@@ -310,15 +310,10 @@ int main( int argc, char** argv )
             optionError = true;
             break;
         }
-        if (strcmp(optArg, "terminal") == 0) {
-            frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::Terminal;
-        } else if (strcmp(optArg, "dap") == 0) {
-          frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::DAP;
-        } else if (strcmp(optArg, "lsp") == 0) {
-          // Backward-compatibility alias (older docs/scripts used "lsp" for DAP mode)
+        if (strcmp(optArg, "dap") == 0) {
           frobOpts.debugProtocol = FrobTadsApplication::DebugProtocol::DAP;
         } else {
-          cerr << opts.name() << ": debug protocol must be 'terminal' or 'dap'.\n";
+          cerr << opts.name() << ": debug protocol must be 'dap'.\n";
             optionError = true;
             break;
         }

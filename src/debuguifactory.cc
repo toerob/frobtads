@@ -5,7 +5,6 @@
 
 #include "frobtadsapp.h"
 #include "debugui.h"
-#include "terminaldebugui.h"
 #include "dap/dapdebugui.h"
 
 /*
@@ -14,27 +13,13 @@
  */
 DebuggerUI* createDebuggerUI(const FrobTadsApplication::FrobOptions& opts)
 {
-    // If no debug protocol is specified, return nullptr to indicate no debugger UI should be used
-    if (opts.debugProtocol == FrobTadsApplication::DebugProtocol::None) {
+    if (opts.debugProtocol != FrobTadsApplication::DebugProtocol::DAP)
         return nullptr;
-    }
 
-    switch (opts.debugProtocol) {
-        case FrobTadsApplication::DebugProtocol::DAP:
-            // Create DAP debug UI with appropriate communication channel
-            if (!opts.dapSocket.empty()) {
-                // Use Unix domain socket
-                return new CDapDebugUI(opts.dapSocket);
-            } else if (opts.dapPort > 0) {
-                // Use TCP socket
-                return new CDapDebugUI(opts.dapPort);
-            } else {
-                // Use stdin/stdout (default)
-                return new CDapDebugUI();
-            }
-        case FrobTadsApplication::DebugProtocol::Terminal:
-        default:
-            return new CTerminalDebugUI();
-    }
+    if (!opts.dapSocket.empty())
+        return new CDapDebugUI(opts.dapSocket);
+    if (opts.dapPort > 0)
+        return new CDapDebugUI(opts.dapPort);
+    return new CDapDebugUI();
 }
 

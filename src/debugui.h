@@ -3,8 +3,8 @@
  *
  * This interface allows different debugger frontends to be used with the
  * TADS VM, including:
- *   - Terminal-based debugger (current implementation)
  *   - DAP (Debug Adapter Protocol) debugger for IDE integration
+ *   - Terminal-based debugger
  *   - Custom debugger implementations
  */
 

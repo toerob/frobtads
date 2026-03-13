@@ -8,6 +8,7 @@
 #ifndef DAPDEBUGUI_H
 #define DAPDEBUGUI_H
 
+#include "common.h"
 #include "debugui.h"
 #include "frobdebughelper.h"
 #include "json.hpp"

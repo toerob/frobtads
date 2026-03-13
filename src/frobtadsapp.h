@@ -35,8 +35,7 @@ class FrobTadsApplication {
 
     // Debugger protocol selection
     enum class DebugProtocol {
-        None,      // (Default)
-        Terminal,  // Terminal-based debugger
+      None,      // (Default)
       DAP        // Debug Adapter Protocol (IDE integration)
     };
 

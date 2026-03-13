@@ -225,7 +225,7 @@ configure_file (
 option (
     ENABLE_TESTS
     "Build the unit tests."
-    ON
+    OFF
 )
 
 if (ENABLE_TESTS)

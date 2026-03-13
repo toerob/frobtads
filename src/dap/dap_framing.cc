@@ -1,5 +1,6 @@
 #include "dap/dap_framing.h"
 
+#include "common.h"
 #include <cerrno>
 #include <cstdlib>
 

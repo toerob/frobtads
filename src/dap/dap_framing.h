@@ -1,6 +1,7 @@
 #ifndef DAP_FRAMING_H
 #define DAP_FRAMING_H
 
+#include "common.h"
 #include <cstddef>
 #include <string>
 

@@ -158,7 +158,6 @@ if (ENABLE_FROBD)
         src/dap/dapdebugui.cc
         src/dap/dap_framing.cc
         src/dap/dapdebugui_io.cc
-        src/textutils.cc
         src/frobdebughelper.cc
         src/debuguifactory.cc
         tads3/vmdbg.cpp

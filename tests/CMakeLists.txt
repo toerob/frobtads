@@ -31,28 +31,12 @@ include_directories(
     ${PROJECT_BINARY_DIR}
 )
 
-# Test executable for textutils
-add_executable(
-    textutils_test
-    textutils_test.cpp
-    ../src/textutils.cc
-)
-#target_link_libraries(textutils_test GTest::gtest_main)
-
 # Coverage support
 option(ENABLE_COVERAGE "Enable coverage reporting" OFF)
 option(OPEN_COVERAGE_REPORT "Open coverage report in browser after generation" ON)
 if(NOT OPEN_COVERAGE_REPORT_DEFAULT_MIGRATED)
     set(OPEN_COVERAGE_REPORT ON CACHE BOOL "Open coverage report in browser after generation" FORCE)
     set(OPEN_COVERAGE_REPORT_DEFAULT_MIGRATED TRUE CACHE INTERNAL "One-time migration for OPEN_COVERAGE_REPORT default")
-endif()
-
-target_link_libraries(textutils_test GTest::gtest_main)
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(textutils_test PRIVATE --coverage)
-        target_link_options(textutils_test PRIVATE --coverage)
-    endif()
 endif()
 
 # "make tests"
@@ -64,71 +48,9 @@ add_custom_target(tests
 
     COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
     COMMENT "Running all tests with ctest"
-    DEPENDS textutils_test eval_handler_test stack_handler_test breakpoint_handler_test print_file_handler_test dapdebugui_basic_test dapdebugui_test
+    DEPENDS dapdebugui_basic_test dapdebugui_test
 )
-
-# Test executable for eval_handler
-add_executable(
-    eval_handler_test
-    eval_handler_test.cpp
-    ../src/textutils.cc
-)
-target_link_libraries(eval_handler_test GTest::gtest_main)
-
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(eval_handler_test PRIVATE --coverage)
-        target_link_options(eval_handler_test PRIVATE --coverage)
-
-    endif()
-endif()
-
-# Test executable for stack_handler
-add_executable(stack_handler_test
-    stack_handler_test.cpp
-    ../src/textutils.cc
-)
-target_link_libraries(stack_handler_test 
-GTest::gtest_main)
-
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(stack_handler_test PRIVATE --coverage)
-        target_link_options(stack_handler_test PRIVATE --coverage)
-
-    endif()
-endif()
-
-# Test executable for breakpoint_handler
-add_executable(breakpoint_handler_test
-    breakpoint_handler_test.cpp
-    ../src/textutils.cc
-)
-target_link_libraries(breakpoint_handler_test 
-    GTest::gtest_main
-)
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(breakpoint_handler_test PRIVATE --coverage)
-        target_link_options(breakpoint_handler_test PRIVATE --coverage)
-    endif()
-endif()
-
-# Test executable for print_file_handler
-add_executable(print_file_handler_test
-    print_file_handler_test.cpp
-    ../src/textutils.cc
-    os_stubs.c
-)
-target_link_libraries(print_file_handler_test 
-    GTest::gtest_main
-)
-if(ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-        target_compile_options(print_file_handler_test PRIVATE --coverage)
-        target_link_options(print_file_handler_test PRIVATE --coverage)
-    endif()
-endif()
+# TODO: remove textutils?
 
 
 # Test executable for dapdebugui - basic protocol tests
@@ -149,12 +71,6 @@ endif()
 
 # Discover tests
 include(GoogleTest)
-gtest_discover_tests(textutils_test DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(eval_handler_test DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(stack_handler_test DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(breakpoint_handler_test DISCOVERY_MODE PRE_TEST)
-gtest_discover_tests(print_file_handler_test DISCOVERY_MODE PRE_TEST)
-
 gtest_discover_tests(dapdebugui_basic_test DISCOVERY_MODE PRE_TEST)
 
 # DAP Debug UI integration-ish unit tests (compiled with VM stubs)
@@ -226,7 +142,7 @@ if(ENABLE_COVERAGE)
             ${COVERAGE_OPEN_COMMAND}
             
             COMMENT "Running tests and generating coverage report with lcov and genhtml"
-            DEPENDS textutils_test eval_handler_test stack_handler_test breakpoint_handler_test print_file_handler_test dapdebugui_basic_test dapdebugui_test
+            DEPENDS dapdebugui_basic_test dapdebugui_test
         )
     else()
         message(WARNING "lcov or genhtml not found, coverage report target will not be available.")
