@@ -59,11 +59,13 @@ public:
 
   DebuggerCommandManager(CVmDebug *debugger, CVmRun *interpreter,
                          CVmSrcfTable *srcf_table, CFrobDebugHelper *helper,
-                         dbgcxdef &g_dbg_ctx)
+                         dbgcxdef &g_dbg_ctx,
+                         const char *image_filename = nullptr)
       : debugger(debugger), interpreter(interpreter), srcf_table(srcf_table),
         helper(helper), g_dbg_ctx(g_dbg_ctx),
         facade(make_unique<DebuggerFacade>(debugger, interpreter, helper,
-                                           srcf_table, g_dbg_ctx)) {
+                                           srcf_table, g_dbg_ctx,
+                                           image_filename)) {
 
     breakpoint_handler = make_unique<BreakpointHandler>(
         static_cast<SourcePort *>(facade.get()),
@@ -147,18 +149,18 @@ public:
     if (bp_number != 0) {
       snprintf(buf, sizeof(buf), "\nBreakpoint %d hit at ", bp_number);
       helper->print(buf);
-      helper->print_source_location(vmg_ 0);
+      print_source_location_resolved(vmg_ 0);
       helper->print("\n");
       print_handler->print_source_context(vmg_ 0, context_lines, message);
     } else if (error_code != 0) {
       snprintf(buf, sizeof(buf), "\nError %d at ", error_code);
       helper->print(buf);
-      helper->print_source_location(vmg_ 0);
+      print_source_location_resolved(vmg_ 0);
       helper->print("\n");
       helper->print("Execution halted\n");
       print_handler->print_source_context(vmg_ 0, context_lines, message);
     } else if (dbg_ctx.stepping_mode != STEP_NONE) {
-      helper->print_source_location(vmg_ 0);
+      print_source_location_resolved(vmg_ 0);
       helper->print("\n");
       print_handler->print_source_context(vmg_ 0, context_lines, message);
     }
@@ -242,6 +244,20 @@ public:
       }
     }
     return map;
+  }
+
+  // Print source location for the given stack level with paths normalized.
+  void print_source_location_resolved(VMG_ int level) {
+    const char *fname = nullptr;
+    unsigned long linenum = 0;
+    if (debugger->get_source_info(vmg_ &fname, &linenum, level) == 0 && fname) {
+      std::string resolved = facade->resolve_source_path(fname);
+      char buf[4096 + 32];
+      snprintf(buf, sizeof(buf), "%s:%lu", resolved.c_str(), linenum);
+      helper->print(buf);
+    } else {
+      helper->print("(unknown location)");
+    }
   }
 
   void handle_help(VMG_ const char *args) {
@@ -446,7 +462,7 @@ public:
     helper->print("\nDebug Information:\n");
     helper->print("------------------\n");
     helper->print("Current location: ");
-    helper->print_source_location(vmg_ stack_level);
+    print_source_location_resolved(vmg_ stack_level);
     helper->print("\n");
     helper->flush();
   }
@@ -468,7 +484,7 @@ public:
    */
   void handle_where(VMG_ const char *args) {
     (void)args;
-    helper->print_source_location(vmg_ stack_handler->get_stack_level());
+    print_source_location_resolved(vmg_ stack_handler->get_stack_level());
     helper->print("\n");
 
     std::string message;

@@ -317,15 +317,15 @@ public:
     const char *fname;
     unsigned long linenum;
 
-    // Try to find source info for the current code address
     if (source_port->get_source_info(vmg_ & fname, &linenum, level) != 0 ||
         !fname) {
       response = "(source not available)\n";
       return -1;
     }
 
-    /* Try to open and read the source file */
-    FILE *fp = fopen(fname, "r");
+    std::string resolved_fname = source_port->resolve_source_path(fname);
+
+    FILE *fp = fopen(resolved_fname.c_str(), "r");
     if (!fp) {
       response = "(source not available)\n";
       return -1;
@@ -352,8 +352,7 @@ public:
     std::string output = "";
     while (fgets(line_buf, sizeof(line_buf), fp) && current_line <= end_line) {
 
-      // Mark breakpoint lines with a red '*' marker
-      auto is_bp = bps.find({fname, current_line}) != bps.end();
+      auto is_bp = bps.find({resolved_fname, current_line}) != bps.end();
       const char *bp = is_bp ? "\033[0;31m*\033[0m" : " ";
 
       if (current_line >= start_line) {

@@ -19,6 +19,7 @@
 #include "vmsrcf.h"
 #include "vmtype.h"
 
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <string>
@@ -44,11 +45,69 @@ public:
   CVmSrcfTable *srcf_table;
   dbgcxdef &g_dbg_ctx;
 
+private:
+  std::string img_dir_;
+
+public:
   DebuggerFacade(CVmDebug *debugger, CVmRun *interpreter,
                  CFrobDebugHelper *helper, CVmSrcfTable *srcf_table,
-                 dbgcxdef &g_dbg_ctx)
+                 dbgcxdef &g_dbg_ctx, const char *image_filename = nullptr)
       : debugger(debugger), interpreter(interpreter), helper(helper),
-        srcf_table(srcf_table), g_dbg_ctx(g_dbg_ctx) {}
+        srcf_table(srcf_table), g_dbg_ctx(g_dbg_ctx) {
+    if (image_filename && image_filename[0] != '\0') {
+      // Absolutize now while cwd is still the game directory (frobtadsapp
+      // chdir's there before the VM starts, so image_filename may be bare).
+      char abs_img[4096];
+      os_get_abs_filename(abs_img, sizeof(abs_img), image_filename);
+      char buf[4096];
+      strncpy(buf, abs_img, sizeof(buf) - 1);
+      buf[sizeof(buf) - 1] = '\0';
+      os_get_path_name(buf, sizeof(buf), buf);
+      img_dir_ = buf;
+    }
+  }
+
+  // Resolve a raw source path (possibly relative) to an absolute, normalized
+  // path.  Relative paths in debug info are relative to the compilation
+  // directory, which is typically an ancestor of the image file's directory
+  // (e.g. the .t3 lives in games/ inside the project root).  We climb the
+  // ancestor chain of img_dir until realpath finds a file that exists.
+  virtual std::string resolve_source_path(const char *fname) override {
+    if (!fname || fname[0] == '\0') return "";
+
+    if (os_is_file_absolute(fname)) {
+      char *r = realpath(fname, nullptr);
+      if (r) { std::string s(r); free(r); return s; }
+      return fname;
+    }
+
+    // Walk from img_dir up through its ancestors (up to 8 levels).
+    if (!img_dir_.empty()) {
+      std::string base = img_dir_;
+      for (int depth = 0; depth < 8; ++depth) {
+        char candidate[4096];
+        os_build_full_path(candidate, sizeof(candidate), base.c_str(), fname);
+        char *r = realpath(candidate, nullptr);
+        if (r) { std::string s(r); free(r); return s; }
+
+        // Move to parent directory; stop at filesystem root.
+        char parent[4096];
+        strncpy(parent, base.c_str(), sizeof(parent) - 1);
+        parent[sizeof(parent) - 1] = '\0';
+        os_get_path_name(parent, sizeof(parent), parent);
+        if (base == parent) break;
+        base = parent;
+      }
+    }
+
+    // Last resort: return whatever we have (unnormalized).
+    if (!img_dir_.empty()) {
+      char candidate[4096];
+      os_build_full_path(candidate, sizeof(candidate), img_dir_.c_str(), fname);
+      return candidate;
+    }
+    return fname;
+  }
 
   virtual int eval_expr(VMG_ char *res, size_t res_size, const char *expr,
                         int flags, int *is_lval, int *is_openable, int, int,
@@ -101,7 +160,7 @@ public:
                                    std::string &fname) override {
     CVmSrcfEntry *e = srcf_table->get_entry(idx);
     if (e) {
-      fname = e->get_name();
+      fname = resolve_source_path(e->get_name());
       return 0;
     }
     return 1;
@@ -133,23 +192,16 @@ public:
           -1, "File number corresponds to a duplicate entry\n", "", {}};
     }
 
-    const char *fname = entry->get_name();
-    unsigned long linenum;
+    std::string resolved_fname = resolve_source_path(entry->get_name());
+    unsigned long linenum = 0;
 
-    /*
-    if (debugger->get_source_info(vmg_ &fname, &linenum, 0) != 0 || !fname) {
-      return SourceContentsResult{-1, "Source information not available\n", "",
-                                  {}};
-    }*/
-
-    vector<string> lines = read_file_lines(fname);
+    vector<string> lines = read_file_lines(resolved_fname.c_str());
     if (lines.empty()) {
-      std::string msg = std::string(fname) + ":" + std::to_string(linenum) +
-                        "\nFailed to read source file or file is empty\n";
-      return SourceContentsResult{-1, msg.c_str(), fname, {}};
+      std::string msg = resolved_fname + "\nFailed to read source file or file is empty\n";
+      return SourceContentsResult{-1, msg, resolved_fname, {}};
     }
 
-    return SourceContentsResult{0, "", fname, std::move(lines)};
+    return SourceContentsResult{0, "", resolved_fname, std::move(lines)};
   }
 
   virtual int get_offset_source_info(VMG_ unsigned long &wantline,
@@ -209,12 +261,10 @@ public:
     size_t tblc = srcf_table ? srcf_table->get_count() : 0;
     for (size_t i = 0; i < tblc; ++i) {
       CVmSrcfEntry *e = srcf_table->get_entry(i);
-      if (master_records_only && !e->is_master()) {
+      if (master_records_only && !e->is_master())
         continue;
-      }
-      if (e) {
-        filenames.push_back(e->get_name());
-      }
+      if (e)
+        filenames.push_back(resolve_source_path(e->get_name()));
     }
     return filenames;
   }
@@ -225,12 +275,10 @@ public:
     size_t tblc = srcf_table ? srcf_table->get_count() : 0;
     for (size_t i = 0; i < tblc; ++i) {
       CVmSrcfEntry *e = srcf_table->get_entry(i);
-      if (master_records_only && !e->is_master()) {
+      if (master_records_only && !e->is_master())
         continue;
-      }
-      if (e) {
-        filenames.push_back({i, e->get_name() ? e->get_name() : "(unnamed)"});
-      }
+      if (e)
+        filenames.push_back({i, resolve_source_path(e->get_name())});
     }
     return filenames;
   }
@@ -239,7 +287,11 @@ public:
                                         size_t &idx_result) override {
     for (size_t idx = 0; idx < G_srcf_table->get_count(); ++idx) {
       CVmSrcfEntry *e = G_srcf_table->get_entry(idx);
-      if (e && strcmp(e->get_name(), fname) == 0) {
+      if (!e) continue;
+      // Compare against the resolved path so callers can pass an absolute path
+      // (as returned by get_entry_source_contents / get_all_abs_filepaths).
+      std::string resolved = resolve_source_path(e->get_name());
+      if (resolved == fname) {
         idx_result = idx;
         return 0;
       }

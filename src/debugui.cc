@@ -146,7 +146,8 @@ void CTerminalDebugUI::init(VMG_ const char *image_filename) {
   // Initialize the command manager with references to the debugger,
   // interpreter, source file table, helper, and debug context
   g_command_manager = std::make_unique<DebuggerCommandManager>(
-      G_debugger, G_interpreter, G_srcf_table, g_helper, g_dbg_ctx);
+      G_debugger, G_interpreter, G_srcf_table, g_helper, g_dbg_ctx,
+      image_filename);
 
   g_helper->print("\nTADS 3 Debugger initialized\n");
   g_helper->print("Type 'help' for available commands\n\n");

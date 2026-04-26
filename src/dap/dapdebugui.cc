@@ -22,6 +22,7 @@
 #include <sstream>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <cstdlib>
 #include <unistd.h>
 
 /* Signal flag for interrupt handling */
@@ -101,7 +102,16 @@ void CDapDebugUI::init(VMG_ const char *image_filename) {
   helper_ = std::make_unique<CFrobDebugHelper>();
   helper_->init(ctx_);
 
-  state_.image_file = image_filename ? image_filename : "";
+  // Resolve to an absolute path now, while cwd is still the game directory
+  // (frobtadsapp chdir's there before starting the VM, so image_filename may
+  // be a bare basename like "game.t3").
+  if (image_filename && image_filename[0] != '\0') {
+    char abs_path[OSFNMAX];
+    os_get_abs_filename(abs_path, sizeof(abs_path), image_filename);
+    state_.image_file = abs_path;
+  } else {
+    state_.image_file = "";
+  }
 
   std::cerr << "[DAP Debug] Initialized with image: " << state_.image_file
             << std::endl;
@@ -663,29 +673,63 @@ void CDapDebugUI::handle_set_breakpoints(const json &request) {
   // Find the source file ID in the source file table
   int source_id = -1;
 
-  // The source file table contains entries for all source files
+  // Precompute image directory for resolving relative source paths.
+  char img_dir[OSFNMAX] = "";
+  if (!state_.image_file.empty()) {
+    strcpy(img_dir, state_.image_file.c_str());
+    os_get_path_name(img_dir, sizeof(img_dir), img_dir);
+  }
+
   if (G_srcf_table != nullptr) {
     for (size_t i = 0; i < G_srcf_table->get_count(); ++i) {
-
-      // Get the source file entry
       CVmSrcfEntry *entry = G_srcf_table->get_entry(i);
-      if (entry != nullptr && entry->get_name() != nullptr) {
+      if (entry == nullptr || entry->get_name() == nullptr)
+        continue;
 
-        // Check if source file matches
-        const char *entry_name = entry->get_name();
+      const char *entry_name = entry->get_name();
 
-        // Try exact match first
-        if (file_path == entry_name) {
-          source_id = i;
-          break;
+      // Resolve using the same parent-climbing strategy as handle_stack_trace.
+      char entry_abs[OSFNMAX];
+      strcpy(entry_abs, entry_name);
+      if (os_is_file_absolute(entry_name)) {
+        char *r = realpath(entry_name, nullptr);
+        if (r) { strncpy(entry_abs, r, OSFNMAX-1); entry_abs[OSFNMAX-1]='\0'; free(r); }
+      } else if (img_dir[0] != '\0') {
+        char fallback[OSFNMAX];
+        os_build_full_path(fallback, sizeof(fallback), img_dir, entry_name);
+
+        bool found = false;
+        std::string base = img_dir;
+        for (int depth = 0; depth < 8 && !found; ++depth) {
+          char candidate[OSFNMAX];
+          os_build_full_path(candidate, sizeof(candidate), base.c_str(), entry_name);
+          char *r = realpath(candidate, nullptr);
+          if (r) {
+            strncpy(entry_abs, r, OSFNMAX-1); entry_abs[OSFNMAX-1]='\0';
+            free(r); found = true;
+          } else {
+            char parent[OSFNMAX];
+            strncpy(parent, base.c_str(), OSFNMAX-1); parent[OSFNMAX-1]='\0';
+            os_get_path_name(parent, sizeof(parent), parent);
+            if (base == parent) break;
+            base = parent;
+          }
         }
+        if (!found)
+          strncpy(entry_abs, fallback, OSFNMAX-1);
+        entry_abs[OSFNMAX-1] = '\0';
+      }
 
-        // Try matching just the filename
-        if (file_path.find(os_get_root_name((char *)entry_name)) !=
-            std::string::npos) {
-          source_id = i;
-          break;
-        }
+      if (file_path == entry_abs) {
+        source_id = (int)i;
+        break;
+      }
+
+      // Fallback: match by filename only (handles unresolvable paths).
+      if (file_path.find(os_get_root_name((char *)entry_name)) !=
+          std::string::npos) {
+        source_id = (int)i;
+        break;
       }
     }
   }
@@ -918,29 +962,48 @@ void CDapDebugUI::handle_stack_trace(const json &request) {
     if (fname != nullptr && fname[0] != '\0') {
       json source;
 
-      // Convert to absolute path if needed
+      // Resolve the source path to an absolute, normalized path.
+      // Relative paths in debug info are relative to the compilation directory,
+      // which may be an ancestor of the image file's directory.  We climb the
+      // ancestor chain of img_dir until realpath finds a file that exists.
       char abs_path[OSFNMAX];
+      strcpy(abs_path, fname); // default: raw path
       if (os_is_file_absolute(fname)) {
-        // Already absolute path
-        strcpy(abs_path, fname);
-      } else {
-        // Try to make the path absolute relative to the image file directory
-        if (!state_.image_file.empty()) {
-          // Get the directory containing the image file
-          char img_dir[OSFNMAX];
-          strcpy(img_dir, state_.image_file.c_str());
-          os_get_path_name(img_dir, sizeof(img_dir), img_dir);
+        char *r = realpath(fname, nullptr);
+        if (r) { strncpy(abs_path, r, OSFNMAX-1); abs_path[OSFNMAX-1]='\0'; free(r); }
+      } else if (!state_.image_file.empty()) {
+        char img_dir[OSFNMAX];
+        strcpy(img_dir, state_.image_file.c_str());
+        os_get_path_name(img_dir, sizeof(img_dir), img_dir);
 
-          // Build absolute path
-          os_build_full_path(abs_path, sizeof(abs_path), img_dir, fname);
-        } else {
-          // Fall back to relative path as-is
-          strcpy(abs_path, fname);
+        // First candidate (img_dir itself) kept as fallback.
+        char fallback[OSFNMAX];
+        os_build_full_path(fallback, sizeof(fallback), img_dir, fname);
+
+        bool found = false;
+        std::string base = img_dir;
+        for (int depth = 0; depth < 8 && !found; ++depth) {
+          char candidate[OSFNMAX];
+          os_build_full_path(candidate, sizeof(candidate), base.c_str(), fname);
+          char *r = realpath(candidate, nullptr);
+          if (r) {
+            strncpy(abs_path, r, OSFNMAX-1); abs_path[OSFNMAX-1]='\0';
+            free(r); found = true;
+          } else {
+            char parent[OSFNMAX];
+            strncpy(parent, base.c_str(), OSFNMAX-1); parent[OSFNMAX-1]='\0';
+            os_get_path_name(parent, sizeof(parent), parent);
+            if (base == parent) break;
+            base = parent;
+          }
         }
+        if (!found)
+          strncpy(abs_path, fallback, OSFNMAX-1);
+        abs_path[OSFNMAX-1] = '\0';
       }
 
-      source["name"] = os_get_root_name(abs_path); // Just the filename
-      source["path"] = abs_path;                   // Full absolute path
+      source["name"] = os_get_root_name(abs_path);
+      source["path"] = abs_path;
       frame["source"] = source;
     }
 

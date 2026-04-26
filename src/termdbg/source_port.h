@@ -76,6 +76,12 @@ public:
     return 1;
   }
 
+  // Resolve a raw source path from debug info to an absolute, normalized path.
+  // Returns the input unchanged if resolution is not possible.
+  virtual std::string resolve_source_path(const char *fname) {
+    return fname ? fname : "";
+  }
+
   virtual ~SourcePort() = default;
 };
 

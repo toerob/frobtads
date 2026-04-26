@@ -46,16 +46,15 @@ public:
       // which we can use to display a meaningful stack trace to the user.
       int rc = source_port->get_source_info(vmg_ & fname, &linenum, level);
 
-      // If we successfully got the source information, we can format and print
-      // it.
       if (rc == 0 && fname) {
+        std::string resolved = source_port->resolve_source_path(fname);
         char buf[512];
         if (level == stack_level) {
-          snprintf(buf, sizeof(buf), "> #%d  at %s:%lu <\n", level, fname,
-                   linenum);
+          snprintf(buf, sizeof(buf), "> #%d  at %s:%lu <\n", level,
+                   resolved.c_str(), linenum);
         } else {
-          snprintf(buf, sizeof(buf), "  #%d  at %s:%lu\n", level, fname,
-                   linenum);
+          snprintf(buf, sizeof(buf), "  #%d  at %s:%lu\n", level,
+                   resolved.c_str(), linenum);
         }
         // Accumulate the stack trace into the result string
         result += buf;
