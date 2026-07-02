@@ -661,6 +661,17 @@ static osfar_t int S_gets_ofs;       /* offset in buffer of insertion point */
 static osfar_t char *S_gets_curhist;             /* current history pointer */
 static osfar_t int S_gets_x, S_gets_y;             /* saved cursor position */
 
+/*
+ *   Bytes of a not-yet-complete multi-byte (UTF-8) input character.  Since
+ *   os_gets_process() is called once per raw input byte, a multi-byte
+ *   character arrives as several separate calls; we buffer the bytes here
+ *   until we have the whole character, so we can insert and display it as
+ *   a single unit (one screen column) instead of one column per byte.
+ */
+static osfar_t unsigned char S_gets_pend_buf[4];
+static osfar_t size_t S_gets_pend_len = 0;   /* bytes collected so far */
+static osfar_t size_t S_gets_pend_need = 0;  /* total bytes this char needs */
+
 # ifdef USE_HISTORY
 /* save buffer for line being edited before history recall began */
 static osfar_t char S_hist_sav_internal[256]; 
@@ -3674,13 +3685,133 @@ static void oss_gets_clear(osgen_txtwin_t *win, int y, int x, size_t len)
 }
 
 /*
- *   Delete a character in the buffer, updating the display. 
+ *   Determine the number of bytes making up the input character that
+ *   starts at 'p', of which at most 'avail' bytes are available.  In UTF-8
+ *   mode, this returns the full length (2 to 4 bytes) of a well-formed
+ *   multi-byte sequence; otherwise, and for any malformed or truncated
+ *   sequence, each byte is its own character (length 1).
+ */
+static size_t utf8_fwd_len(const char *p, size_t avail)
+{
+    unsigned char c;
+    size_t need, i;
+
+    if (avail == 0)
+        return 0;
+
+    c = (unsigned char)*p;
+
+    if (!oss_utf8_mode() || c < 0x80)
+        return 1;
+
+    if ((c & 0xE0) == 0xC0)
+        need = 2;
+    else if ((c & 0xF0) == 0xE0)
+        need = 3;
+    else if ((c & 0xF8) == 0xF0)
+        need = 4;
+    else
+        return 1;                          /* not a valid lead byte */
+
+    if (need > avail)
+        return 1;                          /* truncated sequence */
+
+    for (i = 1 ; i < need ; ++i)
+    {
+        if (((unsigned char)p[i] & 0xC0) != 0x80)
+            return 1;                      /* malformed sequence */
+    }
+
+    return need;
+}
+
+/*
+ *   Determine the number of bytes making up the input character that ends
+ *   immediately before 'p' (which must be greater than 'buf').  Scans
+ *   backwards over UTF-8 continuation bytes to find the start of the
+ *   character.
+ */
+static size_t utf8_back_len(const char *buf, const char *p)
+{
+    const char *q;
+    size_t len;
+
+    if (!oss_utf8_mode())
+        return 1;
+
+    q = p - 1;
+    len = 1;
+    while (q > buf && len < 4 && ((unsigned char)*q & 0xC0) == 0x80)
+    {
+        --q;
+        ++len;
+    }
+
+    /* make sure what we found is really a single well-formed character */
+    if (utf8_fwd_len(q, (size_t)(p - q)) != (size_t)(p - q))
+        return 1;
+
+    return len;
+}
+
+/*
+ *   Count the number of input characters represented by the 'len' bytes
+ *   starting at 'buf'.
+ */
+static size_t utf8_char_count(const char *buf, size_t len)
+{
+    size_t n;
+
+    for (n = 0 ; len != 0 ; ++n)
+    {
+        size_t cl = utf8_fwd_len(buf, len);
+        buf += cl;
+        len -= cl;
+    }
+    return n;
+}
+
+/*
+ *   Insert 'len' bytes (a single, possibly multi-byte, input character) at
+ *   the current insertion point, updating the display and advancing the
+ *   cursor by exactly one screen column, regardless of 'len'.  Does
+ *   nothing if there isn't enough room left in the input buffer.
+ */
+static void gets_insert_char(osgen_txtwin_t *win, char **pp, char **eolp,
+                             int *xp, int *yp, int color,
+                             const char *bytes, size_t len)
+{
+    int deltay;
+    char *p = *pp;
+    char *eol = *eolp;
+
+    if (eol + len > S_gets_buf_end)
+        return;
+
+    if (p != eol)
+        memmove(p + len, p, eol - p);
+    memcpy(p, bytes, len);
+    eol += len;
+    *eol = '\0';
+
+    ossdsp_str(&win->base, *yp, *xp, color, p, len, &deltay);
+    *yp -= deltay;
+
+    oss_gets_csrright(win, yp, xp, 1);
+
+    *pp = p + len;
+    *eolp = eol;
+}
+
+/*
+ *   Delete a character in the buffer, updating the display.
  */
 static void oss_gets_delchar(osgen_txtwin_t *win,
                              char *buf, char *p, char **eol, int x, int y)
 {
     int color;
-    
+    size_t dlen;
+
     /* get the oss color for the current text in the window */
     color = ossgetcolor(win->base.txtfg, win->base.txtbg,
                         win->base.txtattr, win->base.fillcolor);
@@ -3688,19 +3819,20 @@ static void oss_gets_delchar(osgen_txtwin_t *win,
     /* if the character is within the buffer, delete it */
     if (p < *eol)
     {
-        /* delete the character and close the gap */
-        --*eol;
+        /* delete the (possibly multi-byte) character and close the gap */
+        dlen = utf8_fwd_len(p, *eol - p);
+        *eol -= dlen;
         if (p != *eol)
-            memmove(p, p + 1, *eol - p);
+            memmove(p, p + dlen, *eol - p);
 
         /* null-terminate the shortened buffer */
         **eol = '\0';
-        
+
         /* re-display the changed part of the string */
         ossdsp_str(&win->base, y, x, color, p, *eol - p, 0);
 
         /* move to the position of the former last character */
-        oss_gets_csrright(win, &y, &x, *eol - p);
+        oss_gets_csrright(win, &y, &x, utf8_char_count(p, *eol - p));
 
         /* clear the screen area where the old last character was displayed */
         ossclr(y, x, y, x, win->base.oss_fillcolor);
@@ -3716,6 +3848,7 @@ static void oss_gets_backsp(osgen_txtwin_t *win,
                             char **eol, int *x, int *y)
 {
     int color;
+    size_t dlen;
 
     /* get the oss color for the current text in the window */
     color = ossgetcolor(win->base.txtfg, win->base.txtbg,
@@ -3727,15 +3860,16 @@ static void oss_gets_backsp(osgen_txtwin_t *win,
         int tmpy;
         int tmpx;
 
-        /* move our insertion point back one position */
-        --*p;
-        
+        /* move our insertion point back one (possibly multi-byte) character */
+        dlen = utf8_back_len(buf, *p);
+        *p -= dlen;
+
         /* the line is now one character shorter */
-        --*eol;
+        *eol -= dlen;
 
         /* shift all of the characters down one position */
         if (*p != *eol)
-            memmove(*p, *p + 1, *eol - *p);
+            memmove(*p, *p + dlen, *eol - *p);
 
         /* move the cursor back, wrapping if at the first column */
         if (--*x < win->base.winx)
@@ -3747,16 +3881,16 @@ static void oss_gets_backsp(osgen_txtwin_t *win,
         /* null-terminate the shortened buffer */
         **eol = '\0';
 
-        /* 
+        /*
          *   display the string from the current position, so that we update
-         *   the display for the moved characters 
+         *   the display for the moved characters
          */
         tmpy = *y;
         tmpx = *x;
         ossdsp_str(&win->base, tmpy, tmpx, color, *p, *eol - *p, 0);
 
         /* clear the screen area where the old last character was shown */
-        oss_gets_csrright(win, &tmpy, &tmpx, *eol - *p);
+        oss_gets_csrright(win, &tmpy, &tmpx, utf8_char_count(*p, *eol - *p));
         ossclr(tmpy, tmpx, tmpy, tmpx, win->base.oss_fillcolor);
     }
 }
@@ -3782,7 +3916,7 @@ static void osgen_gets_redraw_cmdline(void)
     y = S_gets_y;
 
     /* move to the start of the command */
-    oss_gets_csrleft(win, &y, &x, S_gets_ofs);
+    oss_gets_csrleft(win, &y, &x, utf8_char_count(S_gets_buf, S_gets_ofs));
 
     /* get the color of the command text */
     color = ossgetcolor(win->base.txtfg, win->base.txtbg,
@@ -3821,7 +3955,8 @@ void os_gets_cancel(int reset)
         /* move to the end of the input line */
         x = S_gets_x;
         y = S_gets_y;
-        oss_gets_csrright(win, &y, &x, strlen(S_gets_buf + S_gets_ofs));
+        oss_gets_csrright(win, &y, &x, utf8_char_count(
+            S_gets_buf + S_gets_ofs, strlen(S_gets_buf + S_gets_ofs)));
         
         /* set the cursor to the new position */
         ossloc(y, x);
@@ -3917,7 +4052,7 @@ int os_gets_begin(size_t max_line_len)
                 S_gets_ofs = max_line_len;
 
             /* move back to the original insertion point */
-            oss_gets_csrright(win, &y, &x, S_gets_ofs);
+            oss_gets_csrright(win, &y, &x, utf8_char_count(S_gets_buf, S_gets_ofs));
 
             /* note the current position as the new editing position */
             S_gets_x = x;
@@ -3954,6 +4089,10 @@ int os_gets_begin(size_t max_line_len)
 
     /* note that input is in progress */
     S_gets_in_progress = TRUE;
+
+    /* we're not in the middle of a multi-byte character yet */
+    S_gets_pend_len = 0;
+    S_gets_pend_need = 0;
 
     /* successfully set up */
     return TRUE;
@@ -4041,7 +4180,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
         *eol = '\0';
         
         /* move to the end of the line */
-        oss_gets_csrright(win, &y, &x, eol - p);
+        oss_gets_csrright(win, &y, &x, utf8_char_count(p, eol - p));
         p = eol;
 
 # ifdef USE_HISTORY
@@ -4140,7 +4279,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
             /* move the cursor left */
             if (p > buf)
             {
-                --p;
+                p -= utf8_back_len(buf, p);
                 oss_gets_csrleft(win, &y, &x, 1);
             }
             break;
@@ -4150,28 +4289,28 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
              *   Move back one word.  This moves the cursor back a
              *   character, then seeks back until we're on a non-space
              *   character, then seeks back until we're on a character
-             *   preceded by a space character.  
+             *   preceded by a space character.
              */
             if (p > buf)
             {
                 /* back up one character */
-                --p;
+                p -= utf8_back_len(buf, p);
                 oss_gets_csrleft(win, &y, &x, 1);
 
                 /* back up until we're on a non-space character */
                 while (p > buf && t_isspace(*p) && !t_isspace(*(p-1)))
                 {
-                    --p;
+                    p -= utf8_back_len(buf, p);
                     oss_gets_csrleft(win, &y, &x, 1);
                 }
 
-                /* 
+                /*
                  *   back up again until we're on a character preceded by a
-                 *   space character 
+                 *   space character
                  */
                 while (p > buf && !t_isspace(*(p-1)))
                 {
-                    --p;
+                    p -= utf8_back_len(buf, p);
                     oss_gets_csrleft(win, &y, &x, 1);
                 }
             }
@@ -4181,7 +4320,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
             /* move the cursor right */
             if (p < eol)
             {
-                ++p;
+                p += utf8_fwd_len(p, eol - p);
                 oss_gets_csrright(win, &y, &x, 1);
             }
             break;
@@ -4192,18 +4331,18 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
              *   we're on a space character, then moves the cursor right
              *   again until we're on a non-space character.  First, move
              *   right until we're between words (i.e., until we're on a
-             *   space character).  
+             *   space character).
              */
             while (p < eol && !t_isspace(*p))
             {
-                ++p;
+                p += utf8_fwd_len(p, eol - p);
                 oss_gets_csrright(win, &y, &x, 1);
             }
 
             /* now move right until we're on a non-space character */
             while (p < eol && t_isspace(*p))
             {
-                ++p;
+                p += utf8_fwd_len(p, eol - p);
                 oss_gets_csrright(win, &y, &x, 1);
             }
             break;
@@ -4264,7 +4403,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
                 if (p != buf)
                 {
                     /* move the cursor */
-                    oss_gets_csrleft(win, &y, &x, p - buf);
+                    oss_gets_csrleft(win, &y, &x, utf8_char_count(buf, p - buf));
 
                     /* move the insertion pointer */
                     p = buf;
@@ -4282,7 +4421,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
 
         case CMD_DEOL:
             /* clear the remainder of the line on the display */
-            oss_gets_clear(win, y, x, eol - p);
+            oss_gets_clear(win, y, x, utf8_char_count(p, eol - p));
 
             /* truncate the buffer at the insertion point */
             eol = p;
@@ -4320,7 +4459,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
                 y -= deltay;
 
                 /* move to the end of the line */
-                oss_gets_csrright(win, &y, &x, eol - p);
+                oss_gets_csrright(win, &y, &x, utf8_char_count(p, eol - p));
                 p = eol;
             }
 # endif /* USE_HISTORY */
@@ -4328,7 +4467,7 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
         case CMD_END:
             while (p < eol)
             {
-                ++p;
+                p += utf8_fwd_len(p, eol - p);
                 if (++x >= win->base.winx + (int)win->base.wid)
                 {
                     x = win->base.winx;
@@ -4340,26 +4479,71 @@ int os_gets_process(int event_type, os_event_info_t *event_info)
         break;
 
     default:
-        if (c >= ' ' && eol < S_gets_buf_end)
+        if (c >= ' ')
         {
-            int deltay;
+            if (S_gets_pend_len != 0 && (c & 0xC0) == 0x80)
+            {
+                /* a continuation byte for the sequence in progress */
+                S_gets_pend_buf[S_gets_pend_len++] = c;
+                if (S_gets_pend_len < S_gets_pend_need)
+                {
+                    /* still waiting for more continuation bytes */
+                    break;
+                }
 
-            /* open up the line and insert the character */
-            if (p != eol)
-                memmove(p + 1, p, eol - p);
-            ++eol;
-            *p = (char)c;
-            *eol = '\0';
+                /* the sequence is complete - insert it as one character */
+                gets_insert_char(win, &p, &eol, &x, &y, color,
+                                 (char *)S_gets_pend_buf, S_gets_pend_len);
+                S_gets_pend_len = 0;
+                S_gets_pend_need = 0;
+                break;
+            }
 
-            /* write the updated part of the line */
-            ossdsp_str(&win->base, y, x, color, p, eol - p, &deltay);
-            y -= deltay;
+            if (S_gets_pend_len != 0)
+            {
+                /*
+                 *   We were in the middle of assembling a multi-byte
+                 *   character, but this byte isn't a valid continuation
+                 *   byte for it.  This shouldn't happen with well-formed
+                 *   input from a real terminal, but rather than silently
+                 *   dropping input, flush what we have as raw, one-byte
+                 *   characters, then fall through to handle the new byte
+                 *   normally below.
+                 */
+                unsigned char pend[4];
+                size_t pend_len = S_gets_pend_len;
+                size_t i;
 
-            /* move the cursor right one character */
-            oss_gets_csrright(win, &y, &x, 1);
+                memcpy(pend, S_gets_pend_buf, pend_len);
+                S_gets_pend_len = 0;
+                S_gets_pend_need = 0;
 
-            /* advance the buffer pointer one character */
-            ++p;
+                for (i = 0 ; i < pend_len ; ++i)
+                    gets_insert_char(win, &p, &eol, &x, &y, color,
+                                     (char *)&pend[i], 1);
+            }
+
+            /* does this byte start a new multi-byte UTF-8 sequence? */
+            if (oss_utf8_mode() && (c & 0xE0) == 0xC0)
+                S_gets_pend_need = 2;
+            else if (oss_utf8_mode() && (c & 0xF0) == 0xE0)
+                S_gets_pend_need = 3;
+            else if (oss_utf8_mode() && (c & 0xF8) == 0xF0)
+                S_gets_pend_need = 4;
+            else
+                S_gets_pend_need = 0;
+
+            if (S_gets_pend_need != 0)
+            {
+                /* buffer the lead byte and wait for its continuations */
+                S_gets_pend_buf[0] = c;
+                S_gets_pend_len = 1;
+            }
+            else
+            {
+                /* an ordinary single-byte character */
+                gets_insert_char(win, &p, &eol, &x, &y, color, (char *)&c, 1);
+            }
         }
         break;
     }

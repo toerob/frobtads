@@ -109,6 +109,16 @@ void osssb_cursor_to_default_pos(void);
  */
 int oss_eof_on_stdin(void);
 
+/*
+ *   Determine whether the active local character set for this session is
+ *   UTF-8.  The generic character-mode input line editor in osgen3.c needs
+ *   to know this so that it can treat a run of UTF-8 continuation bytes as
+ *   a single on-screen character (one screen column, one cursor position)
+ *   instead of one column per raw byte.  Ports that don't support UTF-8 at
+ *   all can simply always return false here.
+ */
+int oss_utf8_mode(void);
+
 #else /* RUNTIME */
 
 /* in non-RUNTIME mode, we don't use osssb_redraw_if_needed at all */

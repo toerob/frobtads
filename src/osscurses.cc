@@ -17,6 +17,18 @@ extern "C" {
 #include "frobcurses.h"
 
 
+/* Determine whether the active local character set is UTF-8.  See the
+ * declaration in osgen.h for why the generic input line editor needs this.
+ */
+int
+oss_utf8_mode( void )
+{
+    char mapname[32];
+    os_get_charmap(mapname, 0);
+    return not stricmp(mapname, "utf-8") or not stricmp(mapname, "utf8");
+}
+
+
 /* Translate a portable color specification to an oss-style color code.
  *
  * We treat colors as another form of attribute, just like curses does.
