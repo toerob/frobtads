@@ -1,0 +1,203 @@
+UTF-8 support in the ncurses interface
+=======================================
+
+Background
+==========
+
+Before this work, frob could only handle non-ASCII text (e.g. Swedish
+"å", "ä", "ö") correctly when run as:
+
+    frob -i plain -k utf-8
+
+Running the default ncurses interface with "-k utf-8" produced garbled
+output, garbled echo of typed input, and, in some cases, outright dropped
+text. This was a long-standing, documented limitation (see the v0.10 NEWS
+entry and the TODO comment next to get_charset_alias() in
+src/osportable.cc).
+
+The root cause, in all cases described below, is the same: frob's ncurses
+backend and the shared TADS2 character-mode windowing code it's built on
+(tads2/osgen3.c) were written under the assumption that one byte always
+equals one on-screen column. That assumption holds for single-byte
+character sets (us-ascii, the ISO-8859 family, DOS/Windows code pages,
+etc.), which is all frob originally had to support, but it breaks for
+UTF-8, where a single displayed character (e.g. "å", "ä", "ö") is encoded
+as two bytes.
+
+Fixing this required three separate, independent bugs to be found and
+fixed, plus a build system change. Each is described below.
+
+
+Build system: wide ncurses is now required
+===========================================
+
+frob now requires a wide-character-capable curses library (commonly
+packaged as "ncursesw", e.g. libncursesw5-dev on Debian/Ubuntu). Without
+this, curses has no API for treating a multi-byte sequence as a single
+screen cell.
+
+CMFrob.cmake now asks for CURSES_NEED_WIDE first, and falls back to a
+plain curses search only if that fails to find anything (this covers
+platforms such as macOS, whose system-provided "ncurses" library already
+includes wide-character support under a single name, unlike Linux, which
+typically packages a separate "ncursesw"). Either way, the build now
+verifies at configure time that the curses library found actually
+provides the wide-character API (cchar_t, setcchar(), wget_wch(), etc.),
+and fails with a clear error message if it doesn't.
+
+
+Bug 1: garbled game text output
+================================
+
+Symptom: any non-ASCII character displayed as one or two garbage glyphs
+instead of the intended character.
+
+Cause: FrobTadsApplicationCurses::print() (src/frobtadsappcurses.h) and
+FrobTadsWindow::printStr()/printChar()/charAt() (src/tadswindow.h) worked
+in terms of "chtype", curses' narrow character-plus-attributes type, and
+wrote strings one byte at a time via mvwaddchstr(). A two-byte UTF-8
+character was written to the screen as two independent single-byte cells,
+each rendered as its own (bogus) glyph.
+
+Fix: rewritten to use curses' wide-character API. print()/printStr() now
+hand the UTF-8 string directly to a locale-aware mvwaddstr() call (which,
+once linked against a wide curses library and with the process locale set
+correctly, decodes multi-byte sequences itself). Per-cell operations used
+for scrolling and clearing (printChar(), charAt(), the blank-fill helper)
+were converted from "chtype" to "cchar_t" (curses' wide complex-character
+type), built/read via setcchar()/wadd_wch()/win_wch().
+
+Files: src/tadswindow.h, src/frobtadsappcurses.h, src/frobtadsappcurses.cc
+
+
+Bug 2: garbled echo of typed input
+====================================
+
+Symptom: typing an accented character at the ">" prompt displayed garbage
+or blank cells while typing, even though (per testing) the command that
+was actually submitted to the game was interpreted correctly.
+
+Cause: this is not frob-specific code but the shared TADS2 command-line
+editor in tads2/osgen3.c (os_gets_process() and its helpers), which is
+used any time a game reads a line of input in ncurses mode. Keystrokes
+arrive one raw byte at a time from the terminal; the editor inserted each
+byte into the input buffer and immediately echoed it as a separate
+character, advancing the cursor one column per byte. For a two-byte
+character this means the first byte gets echoed (as garbage, since it
+isn't a complete character on its own) and the cursor advances one column
+too many, before the second byte even arrives.
+
+Fix: added a small state machine (S_gets_pend_buf/_len/_need) that
+buffers the bytes of an in-progress multi-byte sequence across successive
+os_gets_process() calls, and only inserts/echoes/advances the cursor once
+a complete character has been assembled (one call to the new
+gets_insert_char() helper, which moves the cursor by exactly one column
+regardless of how many bytes the character took). Backspace
+(oss_gets_backsp), forward-delete (oss_gets_delchar), left/right arrow,
+word-left/word-right, Home/End/Kill, and history-recall were all updated
+to operate on whole characters (using new utf8_fwd_len()/utf8_back_len()/
+utf8_char_count() helpers) instead of raw bytes, so the cursor position
+and buffer offsets stay in sync.
+
+A new OS-layer hook, oss_utf8_mode() (declared in tads2/osgen.h,
+implemented in src/osscurses.cc), tells this shared code whether the
+active character set is UTF-8, so behavior for all other (single-byte)
+character sets is completely unchanged.
+
+Files: tads2/osgen3.c, tads2/osgen.h, src/osscurses.cc
+
+
+Bug 3: extra spaces, mid-word corruption, and dropped text in longer
+output
+=======================================================================
+
+Symptom: text longer than roughly one line would, depending on exact
+length and terminal width, either show extra spaces / gaps in the middle
+of a line, corrupt a word, or have its tail end silently disappear
+entirely (e.g. a room description ending "... i västra väggen." would
+render as "... i västra v", with the rest never appearing).
+
+Cause: three functions in tads2/osgen3.c track the on-screen cursor
+column by counting bytes instead of characters:
+
+  - ossaddsb(), which stores newly-printed text into the scrollback
+    buffer, advanced its column counter by one per byte. After printing
+    a chunk of text containing N multi-byte characters, its idea of the
+    current column was N columns too far to the right. The *next* chunk
+    of text for that line would then be told to start drawing at that
+    inflated column - which could be at or past the actual end of the
+    line - causing the redraw logic to skip straight past it and never
+    draw it at all. This was the cause of text silently disappearing.
+
+  - osgen_disp_trunc(), which splits long lines into fixed-size chunks
+    for display, sized its chunks and advanced the display column by
+    byte count rather than character count.
+
+  - osgen_scrdisp_txt(), which re-scans a stored line to redraw it (e.g.
+    after a resize or when scrolling into view), walked the line one
+    byte at a time and copied only a multi-byte character's first byte,
+    silently discarding its continuation bytes.
+
+Any one of these was enough to cause visible corruption in sufficiently
+long or accented text; all three needed to be fixed together since they
+share the same stored-text buffer and column bookkeeping.
+
+Fix: all three now use the same utf8_fwd_len()/utf8_char_count() helpers
+added for bug 2 to distinguish "how many bytes" from "how many columns".
+osgen_scrdisp_txt(), which scans a circular scrollback buffer rather than
+a flat string, uses a dedicated ring-buffer-aware variant,
+utf8_fwd_len_sb(), that correctly handles a multi-byte character that
+straddles the buffer's wraparound point.
+
+Files: tads2/osgen3.c
+
+
+Verification
+============
+
+All three fixes were verified against a real Swedish TADS 3 game (not
+included in the repository) run interactively under ncurses via a
+scripted terminal session, at multiple terminal widths, covering:
+
+  - Room descriptions and other game text with heavy diacritic use,
+    including text long enough to wrap and text long enough to exceed
+    the internal chunk sizes involved in bugs 1 and 3.
+  - Typing, backspacing over, forward-deleting, and arrow-key-navigating
+    across multi-byte characters at the command prompt.
+  - Command history recall.
+  - The same scenarios with the default (non-UTF-8) character set, to
+    confirm no regression for existing single-byte-charset behavior.
+
+
+Known issues left to fix
+=========================
+
+  - Text grid banner windows (OS_BANNER_TYPE_TEXTGRID in tads2/osgen3.c,
+    implemented by osgen_scrdisp_grid()/osgen_gridwin_write()) were not
+    addressed. Unlike the scrolling text window fixed above, a text grid
+    is a genuinely fixed-width array of one byte per screen cell
+    (win->grid_txt / win->grid_wid), used together with a parallel
+    per-cell color array. Storing a multi-byte character in it would
+    need each grid cell to potentially hold more than one byte, and the
+    per-cell color array to stay aligned with that - a data-structure
+    change, not just a counting fix. No corruption from this was
+    observed in testing (the exits/status line in the test game did not
+    use this window type), but any TADS3 banner or status line that does
+    use a grid-type banner with accented text longer than a few
+    characters should be treated as suspect until this is addressed.
+
+  - tads2/osgen3.c's CMD_WORDKILL handling (Ctrl-W / delete-previous-word
+    during input editing, Unix builds only) classifies buffer bytes as
+    "whitespace" via a plain signed-char comparison (`*p <= ' '`). Any
+    byte with the high bit set - which includes every UTF-8 lead and
+    continuation byte, but also predates this UTF-8 work (it affected
+    single-byte extended-ASCII characters, e.g. Latin-1, just the same)
+    - can be misclassified as whitespace on platforms where `char` is
+    signed. Not fixed here since it's a pre-existing, narrower, separate
+    bug from the UTF-8 work.
+
+  - doc/BUGS already notes that "-i plain" is only partially supported
+    and buggy; that mode was not touched by this work (it was already
+    the one mode where UTF-8 worked, since it just writes bytes straight
+    through to the terminal) but its other listed issues remain
+    unaddressed.
