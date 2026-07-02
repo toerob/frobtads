@@ -3906,7 +3906,13 @@ static void gets_insert_char(osgen_txtwin_t *win, char **pp, char **eolp,
     eol += len;
     *eol = '\0';
 
-    ossdsp_str(&win->base, *yp, *xp, color, p, len, &deltay);
+    /*
+     *   Redisplay the new character plus everything after it: inserting
+     *   into the middle of the line shifts the remainder of the line one
+     *   column to the right on screen, so it all needs to be redrawn, not
+     *   just the newly-inserted character.
+     */
+    ossdsp_str(&win->base, *yp, *xp, color, p, eol - p, &deltay);
     *yp -= deltay;
 
     oss_gets_csrright(win, yp, xp, 1);
