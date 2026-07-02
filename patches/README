@@ -1,0 +1,62 @@
+Local patches to tads2/tads3 base code
+=======================================
+
+doc/SRC_GUIDELINES says the tads2/ and tads3/ directories are read-only
+and should not be modified locally, since any local changes are silently
+lost the next time FrobTADS is re-synced with a new upstream TADS base
+code release. This directory exists because one feature (UTF-8 support
+in the ncurses interface, plus the "ansi" interface) genuinely could not
+be implemented without touching a few functions in tads2/osgen3.c and
+tads2/osgen.h - see "Why these can't live in src/ alone" below.
+
+This is the same kind of exception the maintainer has made before for
+build/portability fixes that were blocking the port (e.g. commits
+6fa459a, d368a8d, 110c94d, 52c09ea), just for a feature rather than a
+build fix. Per SRC_GUIDELINES' own spirit ("problems... should only be
+reported, not fixed"), these fixes should ideally also be reported
+upstream (to the TADS maintainer) rather than living here indefinitely.
+
+
+What's here
+===========
+
+frobtads-utf8-ansi-basecode.patch
+    The full diff against tads2/osgen.h and tads2/osgen3.c introduced by
+    the UTF-8/ncurses fixes and the "ansi" interface. Generated with:
+
+        git diff <base-code-sync-commit>..<tip> -- tads2/
+
+    See doc/UTF8_NCURSES for a full explanation of what these changes
+    fix and why.
+
+
+Why these can't live in src/ alone
+===================================
+
+Most of the affected logic lives in functions that are either `static`
+(file-private to osgen3.c, with no linker-visible symbol a porter could
+override) or are the *only* implementation of a given os_* interface
+function that TADS2's build model expects to link against exactly once
+(os_print, os_set_text_color, os_set_text_attr, os_set_screen_color).
+tads2/osgen3.c's own header comment documents a real extension-point
+mechanism for this (the USE_STDIO / USE_STATLINE / etc. macros that
+os_plain() itself relies on), but it operates at the level of "opt in or
+out of this entire subsystem", not "replace just these three functions
+and keep the rest". The only way to avoid touching osgen3.c at all would
+be to stop using its console/line-editor/scrollback subsystem entirely
+and hand-write a from-scratch replacement of comparable scope (in
+practice, upwards of 1500 lines) in src/.
+
+
+How to re-apply after a base-code sync
+=======================================
+
+After FrobTADS is re-synced with a new upstream TADS release (i.e.
+tads2/ and tads3/ are replaced wholesale), re-apply with:
+
+    git apply patches/frobtads-utf8-ansi-basecode.patch
+
+If it fails to apply cleanly (likely, since upstream TADS has presumably
+changed in the meantime), use it as a reference for manually re-porting
+the same logic into the new osgen3.c/osgen.h - the patch's comments
+explain the intent of each change, not just the mechanics.

@@ -119,6 +119,28 @@ int oss_eof_on_stdin(void);
  */
 int oss_utf8_mode(void);
 
+/*
+ *   Set the terminal into "ansi" mode: like os_plain(), a linear
+ *   (non-cursor-addressed) stdio stream, but with color/attribute
+ *   tracking, so text is wrapped in real terminal escape codes instead
+ *   of having its color and attribute information silently discarded.
+ *   Implemented in osgen3.c; frob-specific, not part of the portable
+ *   TADS OS interface, so it isn't declared in osifc.h alongside
+ *   os_plain().
+ */
+void os_ansi(void);
+
+/*
+ *   Print 'len' bytes of 'str' using the given oss-level color code (as
+ *   returned by ossgetcolor()).  Used only by os_print() when running in
+ *   "ansi" mode: unlike the windowed display, ansi mode has no per-
+ *   character buffer to store color-change markers in, so os_print()
+ *   resolves the current color itself and asks the platform layer to
+ *   print the text with it directly, translating it to real terminal
+ *   escape codes.
+ */
+void oss_ansi_print(int color, const char *str, size_t len);
+
 #else /* RUNTIME */
 
 /* in non-RUNTIME mode, we don't use osssb_redraw_if_needed at all */

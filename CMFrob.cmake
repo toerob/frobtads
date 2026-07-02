@@ -103,6 +103,7 @@ add_library (
     src/frobtadsappcurses.cc
     src/frobtadsappcurses.h
     src/frobtadsappplain.h
+    src/frobtadsappansi.h
     src/frobcurses.h
     src/tadswindow.h
     src/main.cc

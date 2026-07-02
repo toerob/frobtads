@@ -5,6 +5,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <string.h> // FD_SET is a macro for memset()
+#include <string>
 
 #include "frobtadsapp.h"
 
@@ -15,6 +16,11 @@ extern "C" {
 
 #include "colors.h"
 #include "frobcurses.h"
+
+/* Defined in tads2/osgen3.c; true whenever the active interface is a
+ * linear (non-cursor-addressed) one, i.e. plain or ansi mode.
+ */
+extern "C" int os_f_plain;
 
 
 /* Determine whether the active local character set is UTF-8.  See the
@@ -61,6 +67,19 @@ ossgetcolor( int fg, int bg, int attrs, int screen_color )
     if (not globalApp->colorsEnabled()) {
         f = fg;
         b = (bg == OSGEN_COLOR_TRANSPARENT) ? screen_color : bg;
+
+        // Linear (os_f_plain) interfaces such as plain and ansi mode
+        // don't have a curses attr_t to encode into; use our own
+        // portable bit layout instead (see colors.h).
+        if (os_f_plain) {
+            ret = 0;
+            if (b == OSGEN_COLOR_STATUSBG)
+                ret |= FROB_PORTABLE_REVERSE;
+            else if (f == b)
+                ret |= FROB_PORTABLE_INVIS;
+            if (attrs & OS_ATTR_HILITE) ret |= FROB_PORTABLE_BOLD;
+            return ret;
+        }
 
         if (b == OSGEN_COLOR_STATUSBG)
             // It's the statusline; reverse it.
@@ -147,7 +166,14 @@ ossgetcolor( int fg, int bg, int attrs, int screen_color )
       default:                     b = globalApp->options.bgColor;
     }
 
-    // Construct the color pair.
+    // Construct the color encoding: our own portable bit layout for
+    // linear (os_f_plain) interfaces, or a curses color pair otherwise.
+    if (os_f_plain) {
+        ret = FROB_PORTABLE_FG(f) | (FROB_PORTABLE_FG(b) << 3) | FROB_PORTABLE_HAVE_COLOR;
+        if (attrs & OS_ATTR_HILITE) ret |= FROB_PORTABLE_BOLD;
+        return ret;
+    }
+
     ret = COLOR_PAIR(makeColorPair(f,b));
 
     // Make Tads happy if it wants bold.
@@ -196,8 +222,28 @@ ossdsp( int line, int column, int color, const char* msg )
     // only way to have "invisible" text without color-support.
     // When colors are enabled, text and background will have the
     // same color, so the text is really invisible in color-mode;
-    // A_INVIS is not needed then.
-    if (not (color & A_INVIS)) globalApp->print(line, column, color, msg);
+    // A_INVIS/FROB_PORTABLE_INVIS is not needed then.
+    bool invisible = os_f_plain
+        ? (color & FROB_PORTABLE_INVIS) != 0
+        : (color & A_INVIS) != 0;
+    if (not invisible) globalApp->print(line, column, color, msg);
+}
+
+
+/* Print 'len' bytes of 'str' with the given oss-level color, for "ansi"
+ * mode's linear (non-windowed) output path.  See the declaration in
+ * osgen.h for why this exists as its own entry point instead of going
+ * through ossdsp().
+ */
+void
+oss_ansi_print( int color, const char* str, size_t len )
+{
+    if (color & FROB_PORTABLE_INVIS) return;
+
+    // globalApp->print() takes a null-terminated string, but os_print()
+    // only guarantees 'len' valid bytes starting at 'str'.
+    std::string text(str, len);
+    globalApp->print(0, 0, color, text.c_str());
 }
 
 

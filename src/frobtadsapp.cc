@@ -24,6 +24,10 @@ extern "C"
 #include "frobtadsapp.h"
 #include "frobappctx.h"
 
+/* Defined in tads2/osgen3.c; true whenever the active interface is a
+ * linear (non-cursor-addressed) one, i.e. plain or ansi mode.
+ */
+extern "C" int os_f_plain;
 
 FrobTadsApplication* globalApp;
 
@@ -180,13 +184,18 @@ FrobTadsApplication::runTads( const char* filename, int vm, int argc, const char
     // A kludge to circumvent a curses color problem; display one
     // character in reverse video then one in normal colors.  This
     // avoids the problem where the first block of text is shown in
-    // wrong colors.
-    int tmpColor = ossgetcolor(OSGEN_COLOR_STATUSLINE, OSGEN_COLOR_STATUSBG, 0, 0);
-    ossdsp(0, 0, tmpColor, " ");
-    globalApp->flush();
-    tmpColor = ossgetcolor(OSGEN_COLOR_TEXT, OSGEN_COLOR_TEXTBG, 0, 0);
-    ossdsp(0, 0, tmpColor, " ");
-    globalApp->flush();
+    // wrong colors.  This is a curses-only quirk: plain mode ignores
+    // colors entirely (so the two throwaway spaces are invisible there),
+    // and ansi mode actually renders colors, so running this unmodified
+    // would print a visible stray block before the game's own text.
+    if (not os_f_plain) {
+        int tmpColor = ossgetcolor(OSGEN_COLOR_STATUSLINE, OSGEN_COLOR_STATUSBG, 0, 0);
+        ossdsp(0, 0, tmpColor, " ");
+        globalApp->flush();
+        tmpColor = ossgetcolor(OSGEN_COLOR_TEXT, OSGEN_COLOR_TEXTBG, 0, 0);
+        ossdsp(0, 0, tmpColor, " ");
+        globalApp->flush();
+    }
 
     // Run the VM.
     int vmRet = vm == 0 ? this->fRunTads2(finalFilenamePtr)

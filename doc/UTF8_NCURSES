@@ -1,6 +1,12 @@
 UTF-8 support in the ncurses interface
 =======================================
 
+Note: this work required changes to tads2/osgen.h and tads2/osgen3.c,
+which doc/SRC_GUIDELINES says should normally be left untouched. See
+patches/README for why that exception was made here and how to recover
+these changes after a future base-code sync.
+
+
 Background
 ==========
 

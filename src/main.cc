@@ -16,6 +16,7 @@
 
 #include "frobtadsappcurses.h"
 #include "frobtadsappplain.h"
+#include "frobtadsappansi.h"
 #include "colors.h"
 #include "options.h"
 
@@ -87,10 +88,11 @@ const char helpOutput[] =
 "                       between 1 and 64 (default is 16; about 100 UNDOs)\n"
 "  -k, --character-set  Use given charset as the keyboard and display\n"
 "                       character set.\n"
-"  -i, --interface      Use given screen interface (curses or plain). Default\n"
-"                       is curses. (Advanced features like statusline, banners\n"
-"                       and colors are not available when using the plain\n"
-"                       interface.)\n"
+"  -i, --interface      Use given screen interface (curses, plain, or ansi).\n"
+"                       Default is curses. (Advanced features like\n"
+"                       statusline and banners are not available when using\n"
+"                       the plain or ansi interface; plain also has no\n"
+"                       colors, but ansi does, via ANSI escape codes.)\n"
 "Color codes:\n"
 "   0:black 1:red 2:green 3:yellow 4:blue 5:magenta 6:cyan 7:white\n"
 "(Note that yellow is actually brown on some hardware, mostly PCs.)\n"
@@ -158,7 +160,7 @@ int main( int argc, char** argv )
         "f|force-colors",
         "g:stat-bcolor <0..7>",
         "h|help",
-        "i:interface <curses|plain>",
+        "i:interface <curses|plain|ansi>",
 #ifdef TADSNET
         "I:webimage <url>",
 #endif
@@ -220,7 +222,7 @@ int main( int argc, char** argv )
     ostream cout(stdout);
 
     // Available screen interfaces.
-    enum screenInterface {cursesInterface, plainInterface};
+    enum screenInterface {cursesInterface, plainInterface, ansiInterface};
     // We will use curses by default.
     screenInterface interface = cursesInterface;
 
@@ -500,8 +502,10 @@ int main( int argc, char** argv )
             interface = cursesInterface;
         } else if (strcmp(optArg, "plain") == 0) {
             interface = plainInterface;
+        } else if (strcmp(optArg, "ansi") == 0) {
+            interface = ansiInterface;
         } else {
-            cerr << opts.name() << ": available interfaces: curses, plain.\n";
+            cerr << opts.name() << ": available interfaces: curses, plain, ansi.\n";
             optionError = true;
         }
         break;
@@ -629,6 +633,7 @@ int main( int argc, char** argv )
         switch (interface) {
           case cursesInterface: return FrobTadsApplicationCurses(frobOpts).runTads(actualFilename, 0);
           case plainInterface: return FrobTadsApplicationPlain(frobOpts).runTads(actualFilename, 0);
+          case ansiInterface: return FrobTadsApplicationAnsi(frobOpts).runTads(actualFilename, 0);
         }
 
       case VM_GGT_TADS3: {
@@ -643,6 +648,10 @@ int main( int argc, char** argv )
             break;
           case plainInterface:
             t3vmRet = FrobTadsApplicationPlain(frobOpts)
+                      .runTads(actualFilename, 1, progArgc, progArgv, savedPosFilename, netconfig);
+            break;
+          case ansiInterface:
+            t3vmRet = FrobTadsApplicationAnsi(frobOpts)
                       .runTads(actualFilename, 1, progArgc, progArgv, savedPosFilename, netconfig);
             break;
         }

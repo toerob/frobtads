@@ -32,4 +32,20 @@ makeColorPair(int fg, int bg)
 #define FROB_CYAN    6
 #define FROB_WHITE   7
 
+/* Bit layout for the portable (non-curses) color+attribute encoding.
+ * ossgetcolor() returns this instead of a curses COLOR_PAIR()-based
+ * encoding when running in a linear (os_f_plain) interface, such as
+ * plain or ansi mode, where there's no curses color-pair table to look
+ * up.  A foreground and background color (0-7, same FROB_* values as
+ * above) plus three attribute flags; kept in low bits that can never
+ * collide with curses' own (much higher) attribute bits, so the two
+ * encodings can coexist in the same function.
+ */
+#define FROB_PORTABLE_FG(c)        ((c) & 0x7)
+#define FROB_PORTABLE_BG(c)        (((c) >> 3) & 0x7)
+#define FROB_PORTABLE_HAVE_COLOR   (1 << 6)
+#define FROB_PORTABLE_BOLD         (1 << 7)
+#define FROB_PORTABLE_REVERSE      (1 << 8)
+#define FROB_PORTABLE_INVIS        (1 << 9)
+
 #endif // COLORS_H

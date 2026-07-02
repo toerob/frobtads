@@ -103,9 +103,29 @@ Modified
 
 /*
  *   Flag: use "plain" mode.  If this is set, we'll use plain stdio output
- *   rather than our window-oriented display.  
+ *   rather than our window-oriented display.
  */
 int os_f_plain = 0;
+
+/*
+ *   Flag: use "ansi" mode.  This is a variant of plain mode (os_f_plain
+ *   is set alongside it, via os_ansi()) that still writes a linear stdio
+ *   stream rather than using the window-oriented display, but tracks the
+ *   current color/attribute state and translates it to real terminal
+ *   escape codes as text is printed, instead of ignoring it entirely.
+ */
+int os_f_ansi = 0;
+
+/*
+ *   Current color/attribute state for "ansi" mode.  Since ansi mode has
+ *   no per-character window buffer to store color-change markers in
+ *   (unlike the windowed display), we just track the single most
+ *   recently requested state here; it applies to everything printed
+ *   until the next change.
+ */
+static osfar_t int S_ansi_fg = OSGEN_COLOR_TEXT;
+static osfar_t int S_ansi_bg = OSGEN_COLOR_TRANSPARENT;
+static osfar_t int S_ansi_attr = 0;
 
 #ifdef RUNTIME
 # ifdef USE_SCROLLBACK
@@ -3380,17 +3400,30 @@ void os_plain(void)
     /* set the 'plain' mode flag */
     os_f_plain = 1;
 
-    /* 
+    /*
      *   if we're running without a stdin, turn off pagination - since the
      *   user won't be able to respond to [more] prompts, there's no reason
-     *   to show them 
+     *   to show them
      */
     if (oss_eof_on_stdin())
         G_os_moremode = FALSE;
 }
 
 /*
- *   display text to the default window 
+ *   Set the terminal into "ansi" mode.  This is plain mode (see above)
+ *   plus color/attribute tracking, so that text printed afterwards is
+ *   wrapped in real ANSI escape codes instead of having its color and
+ *   attribute information silently discarded.
+ */
+void os_ansi(void)
+{
+    /* ansi mode is plain mode, plus color tracking */
+    os_plain();
+    os_f_ansi = 1;
+}
+
+/*
+ *   display text to the default window
  */
 void os_printz(const char *str)
 {
@@ -3417,7 +3450,14 @@ void os_print(const char *str, size_t len)
         
     case 0:
         /* we're showing the text in the default window */
-        if (os_f_plain)
+        if (os_f_ansi)
+        {
+            /* ansi mode - print with the currently tracked color/attrs */
+            oss_ansi_print(ossgetcolor(S_ansi_fg, S_ansi_bg, S_ansi_attr,
+                                       OSGEN_COLOR_BLACK),
+                           str, len);
+        }
+        else if (os_f_plain)
         {
             /* plain mode - simply write it to stdout */
             printf("%.*s", (int)len, str);
@@ -4866,13 +4906,20 @@ void os_set_text_attr(int attr)
 {
     osgen_txtwin_t *win;
 
+    /* ansi mode: just remember the current attributes */
+    if (os_f_ansi)
+    {
+        S_ansi_attr = attr;
+        return;
+    }
+
     /* if there's no default output window, do nothing */
     if ((win = S_default_win) == 0)
         return;
 
-    /* 
+    /*
      *   if the attributes are different from the old attributes, add an
-     *   attribute-change sequence to the display buffer 
+     *   attribute-change sequence to the display buffer
      */
     if (attr != win->base.txtattr)
     {
@@ -4980,6 +5027,14 @@ void os_set_text_color(os_color_t fg, os_color_t bg)
 {
     char buf[4];
 
+    /* ansi mode: just remember the current colors */
+    if (os_f_ansi)
+    {
+        S_ansi_fg = osgen_xlat_color_t(fg);
+        S_ansi_bg = osgen_xlat_color_t(bg);
+        return;
+    }
+
     /* if we're in plain mode, ignore it */
     if (os_f_plain || S_default_win == 0)
         return;
@@ -4992,10 +5047,14 @@ void os_set_text_color(os_color_t fg, os_color_t bg)
 }
 
 /*
- *   Set the screen color 
+ *   Set the screen color
  */
 void os_set_screen_color(os_color_t color)
 {
+    /* ansi mode has no persistent "screen" background to speak of */
+    if (os_f_ansi)
+        return;
+
     /* if we're in plain mode, ignore it */
     if (os_f_plain || S_default_win == 0)
         return;
