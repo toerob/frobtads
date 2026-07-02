@@ -60,25 +60,51 @@ class FrobTadsWindow {
     void
     setTimeout( int timeout ) { wtimeout(this->fWin.get(), timeout); }
 
-    /* Writes the string 'str' to the window at the specified
-     * position.  Note the type of 'str'; it's not a 'char*'.  The
-     * 'chtype' datatype is used by curses to store a string
-     * together with the attributes of its characters.  This results
-     * in faster output operations.
+    /* Writes the (UTF-8 encoded) string 'str' to the window at the
+     * specified position, using 'attrs' for every character in the
+     * string.  We rely on the wide-character curses API to decode
+     * 'str' according to the current locale, so a multi-byte
+     * character occupies a single screen cell, instead of one cell
+     * per byte.
      */
     int
-    printStr( int y, int x, chtype* str ) { return mvwaddchstr(this->fWin.get(), y, x, str); }
+    printStr( int y, int x, int attrs, const char* str )
+    {
+        wattrset(this->fWin.get(), attrs);
+        return mvwaddstr(this->fWin.get(), y, x, str);
+    }
 
-    /* Writes the character 'ch' to the window at the specified
-     * coordinates.
+    /* Writes the complex character 'ch' (a full glyph plus its
+     * attributes) to the window at the specified coordinates.
      */
     int
-    printChar( int y, int x, const chtype ch ) { return mvwaddch(this->fWin.get(), y, x, ch); }
+    printChar( int y, int x, const cchar_t& ch ) { return mvwadd_wch(this->fWin.get(), y, x, &ch); }
 
-    /* Returns the character at position (x,y).
+    /* Returns the complex character (glyph plus attributes) at
+     * position (x,y).
      */
-    chtype
-    charAt( int y, int x ) { return mvwinch(this->fWin.get(), y, x); }
+    cchar_t
+    charAt( int y, int x )
+    {
+        cchar_t ch;
+        mvwin_wch(this->fWin.get(), y, x, &ch);
+        return ch;
+    }
+
+    /* Builds a single blank (space) character cell using 'attrs' as
+     * its display attributes.  Used to erase/fill areas of the
+     * window.  'attrs' is a traditional curses attribute value with
+     * the color pair already folded in via COLOR_PAIR(), just like
+     * the values ossgetcolor() returns.
+     */
+    static cchar_t
+    blankChar( int attrs )
+    {
+        cchar_t ch;
+        wchar_t wch[2] = { L' ', L'\0' };
+        setcchar(&ch, wch, attrs & ~A_COLOR, PAIR_NUMBER(attrs), 0);
+        return ch;
+    }
 
     /* Blanks the window (erases its contents).
      */

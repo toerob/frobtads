@@ -279,9 +279,6 @@ FrobTadsApplicationCurses::init()
     // Enable 8-bit characters during input.
     this->fGameWindow->input8bit(true);
 
-    // Create the buffer that we use to optimize output.
-    this->fDispBuf = std::make_unique<chtype[]>(this->fGameWindow->width() + 1);
-
     // Explicitly mark the window as touched, to work around a
     // curses color and screen corruption issue.
     this->fGameWindow->touch();
@@ -305,7 +302,7 @@ FrobTadsApplicationCurses::init()
 void
 FrobTadsApplicationCurses::clear( int top, int left, int bottom, int right, int attrs )
 {
-    const chtype c = attrs | ' ';
+    const cchar_t c = FrobTadsWindow::blankChar(attrs);
     for (int y = top; y <= bottom; ++y) {
         for (int x = left; x <= right; ++x) {
             this->fGameWindow->printChar(y, x, c);
@@ -321,13 +318,13 @@ FrobTadsApplicationCurses::scrollRegionUp( int top, int left, int bottom, int ri
     // windows, so we do the scrolling by hand.
     for (int y = bottom; y > top; --y) {
         for (int x = left; x <= right; ++x) {
-            const chtype c = this->fGameWindow->charAt(y-1, x);
+            const cchar_t c = this->fGameWindow->charAt(y-1, x);
             this->fGameWindow->printChar(y, x, c);
         }
     }
 
     // Clear the last line.
-    const chtype c = attrs | ' ';
+    const cchar_t c = FrobTadsWindow::blankChar(attrs);
     for (int i = left; i <= right; ++i) this->fGameWindow->printChar(top, i, c);
 
     // If soft-scrolling is enabled, update the display so that we
@@ -345,7 +342,7 @@ FrobTadsApplicationCurses::scrollRegionDown( int top, int left, int bottom, int 
             this->fGameWindow->printChar(y, x, this->fGameWindow->charAt(y+1, x));
         }
     }
-    const chtype c = attrs | ' ';
+    const cchar_t c = FrobTadsWindow::blankChar(attrs);
     for (int i = left; i <= right; ++i) this->fGameWindow->printChar(bottom, i, c);
     if (this->options.softScroll) this->fGameWindow->flush();
 }

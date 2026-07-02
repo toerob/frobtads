@@ -15,13 +15,6 @@ class FrobTadsApplicationCurses: public FrobTadsApplication {
     // The window we use for I/O.
     std::unique_ptr<FrobTadsWindow> fGameWindow;
 
-    // Tads never tries to display a string that is longer than the
-    // window's width.  We use this knowledge to optimize output
-    // somewhat.  Instead of allocating and deallocating memory each
-    // time we print a string, we use this small buffer instead and
-    // allocate memory only once when a game window is created.
-    std::unique_ptr<chtype[]> fDispBuf;
-
   public:
     FrobTadsApplicationCurses( const FrobOptions& opts );
     ~FrobTadsApplicationCurses();
@@ -47,13 +40,7 @@ class FrobTadsApplicationCurses: public FrobTadsApplication {
 
     virtual void
     print( int line, int column, int attrs, const char* str )
-    {
-        int i;
-        for (i = 0; str[i] != '\0'; ++i)
-            this->fDispBuf[i] = static_cast<unsigned char>(str[i]) | attrs;
-        this->fDispBuf[i] = '\0';
-        this->fGameWindow->printStr(line, column, this->fDispBuf.get());
-    }
+    { this->fGameWindow->printStr(line, column, attrs, str); }
 
     virtual void
     flush()

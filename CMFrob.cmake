@@ -1,6 +1,42 @@
 find_package(Threads REQUIRED)
 set(CURSES_NEED_NCURSES TRUE)
-find_package(Curses REQUIRED)
+
+# We need a wide-character (UTF-8 capable) curses so that non-ASCII text is
+# displayed and read back correctly.  Most systems package this separately
+# as "ncursesw"; ask for it explicitly first.  Some systems (e.g. macOS)
+# instead ship a single ncurses library that already has wide-character
+# support built in and have no separately-named "ncursesw" to find, so fall
+# back to a plain search if the wide-specific one comes up empty.
+set(CURSES_NEED_WIDE TRUE)
+find_package(Curses QUIET)
+if (NOT CURSES_FOUND)
+    set(CURSES_NEED_WIDE FALSE)
+    find_package(Curses REQUIRED)
+endif()
+
+# Whichever curses we found, verify that it actually provides the
+# wide-character API (cchar_t, setcchar(), wget_wch(), etc.); we depend on
+# it for correct UTF-8 handling and there's no narrow-only fallback.
+set(CMAKE_REQUIRED_INCLUDES ${CURSES_INCLUDE_DIRS})
+set(CMAKE_REQUIRED_LIBRARIES ${CURSES_LIBRARIES})
+set(CMAKE_REQUIRED_DEFINITIONS -D_XOPEN_SOURCE_EXTENDED)
+check_cxx_source_compiles ("
+    #include <curses.h>
+    int main() {
+        cchar_t c;
+        wchar_t wch[2] = { L' ', (wchar_t)0 };
+        setcchar(&c, wch, A_NORMAL, 0, 0);
+        return wget_wch(stdscr, (wint_t*)0);
+    }"
+    CURSES_HAS_WIDECHAR
+)
+set(CMAKE_REQUIRED_INCLUDES)
+set(CMAKE_REQUIRED_LIBRARIES)
+set(CMAKE_REQUIRED_DEFINITIONS)
+if (NOT CURSES_HAS_WIDECHAR)
+    message(FATAL_ERROR "frob requires a wide-character curses library (ncursesw) for UTF-8 support. Please install a wide ncurses development package (e.g. libncursesw5-dev on Debian/Ubuntu).")
+endif()
+
 if (ENABLE_TADSNET)
     find_package(CURL REQUIRED)
 endif()
@@ -114,6 +150,10 @@ endif()
 target_compile_definitions (
     FROB_OBJECTS PRIVATE
     RUNTIME
+
+    # Exposes the wide-character (cchar_t, wget_wch(), etc.) curses API,
+    # which we need for correct UTF-8 display and input.
+    _XOPEN_SOURCE_EXTENDED
 )
 
 add_executable (
