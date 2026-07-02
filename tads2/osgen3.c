@@ -701,6 +701,9 @@ static void osgen_gridwin_clear(osgen_gridwin_t *win, size_t ofs, size_t len);
 static void osgen_redraw_win(osgen_win_t *win);
 static void osgen_scrdisp(osgen_win_t *win, int x, int y, int len);
 static void osgen_gets_redraw_cmdline(void);
+static size_t utf8_fwd_len(const char *p, size_t avail);
+static size_t utf8_char_count(const char *buf, size_t len);
+static size_t utf8_fwd_len_sb(osgen_txtwin_t *win, char *p);
 
 /*
  *   Delete a window 
@@ -1132,6 +1135,7 @@ static void osgen_disp_trunc(osgen_win_t *win, int y, int x, int oss_color,
                              const char *p)
 {
     char buf[64];
+    size_t bytes_rem;
     size_t chars_rem;
     size_t wid_rem;
 
@@ -1139,8 +1143,9 @@ static void osgen_disp_trunc(osgen_win_t *win, int y, int x, int oss_color,
     if (S_deferred_redraw || (win->flags & OSGEN_DEFER_REDRAW) != 0)
         return;
 
-    /* get the number of characters to be displayed */
-    chars_rem = strlen(p);
+    /* get the number of bytes and characters (columns) to be displayed */
+    bytes_rem = strlen(p);
+    chars_rem = utf8_char_count(p, bytes_rem);
 
     /* calculate the amount of space we have to work with on the screen */
     wid_rem = win->wid - (x >= 0 ? x : 0);
@@ -1150,29 +1155,35 @@ static void osgen_disp_trunc(osgen_win_t *win, int y, int x, int oss_color,
         || x + (int)chars_rem <= 0 || x >= (int)win->wid)
         return;
 
-    /* 
+    /*
      *   if we're starting to the left of the window, skip characters up to
-     *   the first character visible in the window 
+     *   the first character visible in the window
      */
     if (x < 0)
     {
-        /* 
+        /*
          *   get the number of characters to skip - this is simply the
          *   negative of the x position, since x position zero is the first
-         *   column to display 
+         *   column to display
          */
-        x = -x;
+        size_t skip = -x;
 
-        /* 
+        /*
          *   if we don't have enough characters to reach the left edge of
-         *   the window, we have nothing to do 
+         *   the window, we have nothing to do
          */
-        if (chars_rem <= (size_t)x)
+        if (chars_rem <= skip)
             return;
 
-        /* skip the desired number of characters */
-        chars_rem -= x;
-        p += x;
+        /* skip the desired number of characters (not bytes) */
+        while (skip != 0)
+        {
+            size_t cl = utf8_fwd_len(p, bytes_rem);
+            p += cl;
+            bytes_rem -= cl;
+            --chars_rem;
+            --skip;
+        }
 
         /* we've skipped up to column zero, so proceed from there */
         x = 0;
@@ -1188,36 +1199,62 @@ static void osgen_disp_trunc(osgen_win_t *win, int y, int x, int oss_color,
         return;
     }
 
-    /* 
+    /*
      *   we have too much to display, so display as much as will fit - keep
      *   going until we run out of space for the display (we know we'll run
      *   out of space before we run out of text, because we know we have too
-     *   much text to fit) 
+     *   much text to fit)
      */
     while (wid_rem != 0)
     {
-        size_t cur;
+        size_t cur_chars;
+        size_t cur_bytes;
+        const char *q;
+        size_t rem;
 
-        /* display as much as will fit, up to our buffer length */
-        cur = wid_rem;
-        if (cur > sizeof(buf) - 1)
-            cur = sizeof(buf) - 1;
+        /*
+         *   figure out how many whole characters (and their total byte
+         *   length) fit within our scratch buffer and the requested
+         *   column count, without splitting a multi-byte character
+         */
+        cur_chars = 0;
+        cur_bytes = 0;
+        q = p;
+        rem = bytes_rem;
+        while (cur_chars < wid_rem && rem != 0)
+        {
+            size_t cl = utf8_fwd_len(q, rem);
+            if (cur_bytes + cl > sizeof(buf) - 1)
+                break;
+            cur_bytes += cl;
+            q += cl;
+            rem -= cl;
+            ++cur_chars;
+        }
+
+        /*
+         *   paranoia: this shouldn't happen with real UTF-8 text, but make
+         *   sure we always make forward progress
+         */
+        if (cur_bytes == 0)
+            break;
 
         /* copy this portion to our buffer and null-terminate it */
-        memcpy(buf, p, cur);
-        buf[cur] = '\0';
+        memcpy(buf, p, cur_bytes);
+        buf[cur_bytes] = '\0';
 
         /* display it */
         ossdsp(win->winy + y, win->winx + x, oss_color, buf);
 
-        /* advance our screen position */
-        x += cur;
+        /* advance our screen position, in columns */
+        x += cur_chars;
 
         /* advance past the source material we just displayed */
-        p += cur;
+        p += cur_bytes;
+        bytes_rem -= cur_bytes;
 
         /* deduct the on-screen space we consumed from the remaining space */
-        wid_rem -= cur;
+        wid_rem -= cur_chars;
     }
 }
 
@@ -1873,24 +1910,37 @@ static void ossaddsb(osgen_txtwin_t *win, const char *p, size_t len, int draw)
             break;
 
         default:
-            /* for anything else, simply store the byte in the buffer */
-            if (osssb_add_byte(win, *p))
             {
-                /* note the maximum output position if appropriate */
-                if (win->base.x > win->base.xmax)
-                    win->base.xmax = win->base.x;
+                /* determine how many bytes make up this character */
+                size_t clen = utf8_fwd_len(p, len);
+                size_t i;
+                int all_stored = TRUE;
 
-                /* adjust the output x position */
-                win->base.x++;
+                /* store all of this character's bytes in the buffer */
+                for (i = 0 ; i < clen ; ++i)
+                {
+                    if (!osssb_add_byte(win, p[i]))
+                        all_stored = FALSE;
+                }
 
-                /* count the ordinary character in the display length */
-                ++line_len;
+                if (all_stored)
+                {
+                    /* note the maximum output position if appropriate */
+                    if (win->base.x > win->base.xmax)
+                        win->base.xmax = win->base.x;
+
+                    /* adjust the output x position by one column */
+                    win->base.x++;
+
+                    /* count the character (not its bytes) in the display length */
+                    ++line_len;
+                }
+
+                /* skip the character */
+                p += clen;
+                len -= clen;
             }
-            
-            /* skip the character */
-            ++p;
-            --len;
-                
+
             /* done */
             break;
         }
@@ -2213,7 +2263,46 @@ static int osgen_sb_mode(osgen_txtwin_t *win, int event_type,
 }
 
 /*
- *   Display a line of text in the given ordinary text window 
+ *   Determine the number of bytes making up the input character that
+ *   starts at 'p' in the given text window's (circular) scrollback
+ *   buffer.  This is the scrollback-buffer counterpart of utf8_fwd_len():
+ *   it peeks ahead using ossadvsp() so it correctly handles wraparound at
+ *   the end of the buffer, and treats the line's terminating null byte as
+ *   the end of the available data.
+ */
+static size_t utf8_fwd_len_sb(osgen_txtwin_t *win, char *p)
+{
+    unsigned char c;
+    size_t need, i;
+    char *q;
+
+    c = (unsigned char)*p;
+
+    if (!oss_utf8_mode() || c < 0x80)
+        return 1;
+
+    if ((c & 0xE0) == 0xC0)
+        need = 2;
+    else if ((c & 0xF0) == 0xE0)
+        need = 3;
+    else if ((c & 0xF8) == 0xF0)
+        need = 4;
+    else
+        return 1;                          /* not a valid lead byte */
+
+    q = p;
+    for (i = 1 ; i < need ; ++i)
+    {
+        q = ossadvsp(win, q);
+        if (*q == '\0' || ((unsigned char)*q & 0xC0) != 0x80)
+            return 1;                      /* truncated or malformed */
+    }
+
+    return need;
+}
+
+/*
+ *   Display a line of text in the given ordinary text window
  */
 static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
 {
@@ -2240,13 +2329,15 @@ static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
     /* get the window-relative x coordinate of the start of the line */
     scanx = -win->base.scrollx;
 
-    /* 
+    /*
      *   Scan the line.  We must scan from the start of the line, even if we
      *   don't want to display from the start of the line, to make sure we
      *   take into account any color and attribute settings stored in the
-     *   line.  
+     *   line.  We advance 'p' explicitly within the loop body (rather than
+     *   in the 'for' increment) since a single on-screen character may
+     *   span more than one byte.
      */
-    for (bufp = buf ; *p != '\0' && len != 0 ; p = ossadvsp(win, p))
+    for (bufp = buf ; *p != '\0' && len != 0 ; )
     {
         /* check for special escape codes */
         switch(*p)
@@ -2257,6 +2348,9 @@ static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
 
             /* get the new attribute code */
             attr = *p;
+
+            /* skip the attribute byte too */
+            p = ossadvsp(win, p);
 
             /* set the new colors */
             goto change_color;
@@ -2269,8 +2363,9 @@ static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
             fg = *p;
             p = ossadvsp(win, p);
 
-            /* get the background color */
+            /* get the background color and skip it too */
             bg = *p;
+            p = ossadvsp(win, p);
             goto change_color;
 
         change_color:
@@ -2282,7 +2377,7 @@ static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
                 osgen_disp_trunc(&win->base, y, x, oss_color, buf);
 
                 /* adjust the column position for the display */
-                x += bufp - buf;
+                x += utf8_char_count(buf, bufp - buf);
 
                 /* reset the buffer */
                 bufp = buf;
@@ -2293,37 +2388,54 @@ static void osgen_scrdisp_txt(osgen_txtwin_t *win, int x, int y, int len)
             break;
 
         default:
-            /* if the buffer is full, flush it */
-            if (bufp == buf + sizeof(buf) - 1)
             {
-                /* display the buffer */
-                *bufp = '\0';
-                osgen_disp_trunc(&win->base, y, x, oss_color, buf);
+                /* determine how many bytes make up this on-screen character */
+                size_t clen = utf8_fwd_len_sb(win, p);
+                size_t i;
 
-                /* adjust the column position for the display */
-                x += bufp - buf;
+                /* if the buffer doesn't have room for it, flush first */
+                if (bufp + clen > buf + sizeof(buf) - 1)
+                {
+                    /* display the buffer */
+                    *bufp = '\0';
+                    osgen_disp_trunc(&win->base, y, x, oss_color, buf);
 
-                /* empty the buffer */
-                bufp = buf;
+                    /* adjust the column position for the display */
+                    x += utf8_char_count(buf, bufp - buf);
+
+                    /* empty the buffer */
+                    bufp = buf;
+                }
+
+                /*
+                 *   if we've reached the starting x coordinate, add this
+                 *   character to the buffer; if we haven't, we can ignore
+                 *   the character, since in that case we're just scanning
+                 *   for escape codes in the line before the part we want
+                 *   to display
+                 */
+                if (scanx >= x)
+                {
+                    /* add all of this character's bytes to the buffer */
+                    for (i = 0 ; i < clen ; ++i)
+                    {
+                        *bufp++ = *p;
+                        p = ossadvsp(win, p);
+                    }
+
+                    /* count it against the length remaining to be displayed */
+                    --len;
+                }
+                else
+                {
+                    /* not yet visible - just skip over this character */
+                    for (i = 0 ; i < clen ; ++i)
+                        p = ossadvsp(win, p);
+                }
+
+                /* adjust the x coordinate of our scan */
+                ++scanx;
             }
-
-            /* 
-             *   if we've reached the starting x coordinate, add this
-             *   character to the buffer; if we haven't, we can ignore the
-             *   character, since in that case we're just scanning for
-             *   escape codes in the line before the part we want to display 
-             */
-            if (scanx >= x)
-            {
-                /* add it to the buffer */
-                *bufp++ = *p;
-
-                /* count it against the length remaining to be displayed */
-                --len;
-            }
-
-            /* adjust the x coordinate of our scan */
-            ++scanx;
 
             /* done */
             break;
